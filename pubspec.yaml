@@ -1,0 +1,44 @@
+name: offline_sync_app
+description: Flutter app with image upload and Bluetooth hopping
+
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+  flutter: ">=3.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  
+  # UI & State Management
+  cupertino_icons: ^1.0.2
+  provider: ^6.1.1
+  
+  # Image & File Handling
+  image_picker: ^1.0.4
+  path_provider: ^2.1.1
+  
+  # Network & Connectivity
+  connectivity_plus: ^7.0.0
+  http: ^1.1.0
+  
+  # Bluetooth & Nearby Connections
+  nearby_connections: ^4.3.0
+  
+  # Local Storage
+  sqflite: ^2.3.0
+  shared_preferences: ^2.2.2
+  path: ^1.8.3
+  
+  # Permissions
+  permission_handler: ^12.0.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
