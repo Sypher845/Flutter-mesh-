@@ -75,4 +75,18 @@ class LocalStorageService {
       whereArgs: [id],
     );
   }
+
+  Future<void> clearAllTickets() async {
+    final db = await database;
+    await db.delete('tickets');
+  }
+
+  Future<List<TicketModel>> getAllTickets() async {
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.query('tickets');
+
+    return List.generate(maps.length, (i) {
+      return TicketModel.fromJson(maps[i]);
+    });
+  }
 }

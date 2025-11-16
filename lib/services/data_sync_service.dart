@@ -5,63 +5,50 @@ import 'local_storage_service.dart';
 class DataSyncService extends ChangeNotifier {
   final LocalStorageService _localStorage = LocalStorageService();
   
-  List<TicketModel> _pendingTickets = [];
-  List<TicketModel> get pendingTickets => _pendingTickets;
+  List<TicketModel> _tickets = [];
+  List<TicketModel> get tickets => _tickets;
   
   String _statusMessage = '';
   String get statusMessage => _statusMessage;
-  
-  // Mock backend setting - change to false to test error scenarios
-  bool _mockBackendSuccess = true;
 
   DataSyncService() {
-    _loadPendingTickets();
+    _loadTickets();
   }
 
-  Future<void> _loadPendingTickets() async {
-    _pendingTickets = await _localStorage.getPendingTickets();
+  Future<void> _loadTickets() async {
+    _tickets = await _localStorage.getPendingTickets();
     notifyListeners();
   }
 
   Future<void> addTicket(TicketModel ticket) async {
-    _pendingTickets.add(ticket);
-    await _localStorage.saveTicket(ticket);
+    // Set status to bluetooth hopping since we're only using Bluetooth
+    final bluetoothTicket = ticket.copyWith(status: TicketStatus.bluetoothHopping);
+    
+    _tickets.add(bluetoothTicket);
+    await _localStorage.saveTicket(bluetoothTicket);
+    
+    _updateStatus('📱 Ticket saved locally - ready for Bluetooth hopping');
     notifyListeners();
   }
 
-  Future<bool> syncToBackend(TicketModel ticket) async {
-    try {
-      _updateStatus('Sending data to backend...');
-      
-      // MOCK BACKEND - Simulate network delay and response
-      await Future.delayed(Duration(seconds: 2));
-      
-      // MOCK BACKEND - Simulate success/failure for testing
-      if (_mockBackendSuccess) {
-        // Success - Mark ticket as sent
-        await _markTicketAsSent(ticket);
-        _updateStatus('✅ Data sent to backend successfully!');
-        print('MOCK BACKEND: Received ticket - ID: ${ticket.id}, Description: ${ticket.description}');
-        if (ticket.imagePath != null) {
-          print('MOCK BACKEND: Image path: ${ticket.imagePath}');
-        }
-        return true;
-      } else {
-        // Failure scenario
-        _updateStatus('❌ Failed to send to backend (mock error)');
-        return false;
-      }
-    } catch (e) {
-      _updateStatus('Error sending to backend: $e');
-      return false;
+  Future<void> markTicketAsHopped(TicketModel ticket) async {
+    final hoppedTicket = ticket.copyWith(status: TicketStatus.sent);
+    await _localStorage.updateTicket(hoppedTicket);
+    
+    // Update the ticket in our list
+    final index = _tickets.indexWhere((t) => t.id == ticket.id);
+    if (index != -1) {
+      _tickets[index] = hoppedTicket;
     }
+    
+    _updateStatus('📡 Ticket successfully hopped via Bluetooth');
+    notifyListeners();
   }
 
-  Future<void> _markTicketAsSent(TicketModel ticket) async {
-    final updatedTicket = ticket.copyWith(status: TicketStatus.sent);
-    await _localStorage.updateTicket(updatedTicket);
-    
-    _pendingTickets.removeWhere((t) => t.id == ticket.id);
+  Future<void> clearAllTickets() async {
+    _tickets.clear();
+    await _localStorage.clearAllTickets();
+    _updateStatus('🗑️ All tickets cleared');
     notifyListeners();
   }
 
@@ -76,13 +63,5 @@ class DataSyncService extends ChangeNotifier {
         notifyListeners();
       }
     });
-  }
-
-  Future<void> retryPendingTickets() async {
-    for (final ticket in List.from(_pendingTickets)) {
-      if (ticket.status == TicketStatus.pending || ticket.status == TicketStatus.failed) {
-        await syncToBackend(ticket);
-      }
-    }
   }
 }

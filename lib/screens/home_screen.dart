@@ -5,14 +5,15 @@ import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'dart:io';
 import '../models/ticket_model.dart';
-import '../services/connectivity_service.dart';
 import '../services/data_sync_service.dart';
 import '../services/bluetooth_service.dart';
 import '../utils/test_helper.dart';
 
 class HomeScreen extends StatefulWidget {
+  const HomeScreen({super.key});
+
   @override
-  _HomeScreenState createState() => _HomeScreenState();
+  State<HomeScreen> createState() => _HomeScreenState();
 }
 
 class _HomeScreenState extends State<HomeScreen> {
@@ -24,7 +25,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('Offline Sync App'),
+        title: Text('Bluetooth Hopping App'),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         actions: [
           IconButton(
@@ -39,8 +40,6 @@ class _HomeScreenState extends State<HomeScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            _buildConnectionStatus(),
-            SizedBox(height: 20),
             _buildImageSection(),
             SizedBox(height: 20),
             _buildDescriptionSection(),
@@ -53,50 +52,14 @@ class _HomeScreenState extends State<HomeScreen> {
             SizedBox(height: 20),
             _buildBluetoothControls(),
             SizedBox(height: 20),
-            _buildPendingTickets(),
+            _buildTicketsList(),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildConnectionStatus() {
-    return Consumer<ConnectivityService>(
-      builder: (context, connectivity, child) {
-        return Card(
-          color: connectivity.isConnected ? Colors.green[100] : Colors.red[100],
-          child: Padding(
-            padding: EdgeInsets.all(16.0),
-            child: Row(
-              children: [
-                Icon(
-                  connectivity.isConnected ? Icons.wifi : Icons.wifi_off,
-                  color: connectivity.isConnected ? Colors.green : Colors.red,
-                ),
-                SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    connectivity.isConnected ? 'Connected to Internet' : 'No Internet Connection',
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color: connectivity.isConnected ? Colors.green[800] : Colors.red[800],
-                    ),
-                  ),
-                ),
-                TextButton(
-                  onPressed: () => connectivity.setInternetEnabled(!connectivity.isConnected),
-                  child: Text(
-                    connectivity.isConnected ? 'Disable' : 'Enable',
-                    style: TextStyle(fontSize: 12),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-    );
-  }
+
 
   Widget _buildImageSection() {
     return Card(
@@ -171,8 +134,8 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildSubmitButton() {
-    return Consumer2<ConnectivityService, DataSyncService>(
-      builder: (context, connectivity, dataSync, child) {
+    return Consumer<DataSyncService>(
+      builder: (context, dataSync, child) {
         return ElevatedButton(
           onPressed: _canSubmit() ? _submitTicket : null,
           style: ElevatedButton.styleFrom(
@@ -181,7 +144,7 @@ class _HomeScreenState extends State<HomeScreen> {
             foregroundColor: Colors.white,
           ),
           child: Text(
-            'Submit Ticket',
+            'Create Ticket for Bluetooth Hopping',
             style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
           ),
         );
@@ -225,9 +188,8 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildBluetoothControls() {
-    return Consumer2<ConnectivityService, BluetoothService>(
-      builder: (context, connectivity, bluetooth, child) {
-        if (connectivity.isConnected) return SizedBox.shrink();
+    return Consumer<BluetoothService>(
+      builder: (context, bluetooth, child) {
 
         return Card(
           child: Padding(
@@ -235,9 +197,9 @@ class _HomeScreenState extends State<HomeScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Bluetooth Hopping', style: Theme.of(context).textTheme.titleMedium),
+                Text('Bluetooth Hopping Controls', style: Theme.of(context).textTheme.titleMedium),
                 SizedBox(height: 10),
-                Text('No internet connection. Use Bluetooth to hop data to nearby devices.'),
+                Text('Use Bluetooth to hop data to nearby devices running this app.'),
             SizedBox(height: 8),
             Container(
               padding: EdgeInsets.all(8),
@@ -345,10 +307,10 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildPendingTickets() {
+  Widget _buildTicketsList() {
     return Consumer<DataSyncService>(
       builder: (context, dataSync, child) {
-        if (dataSync.pendingTickets.isEmpty) return SizedBox.shrink();
+        if (dataSync.tickets.isEmpty) return SizedBox.shrink();
 
         return Card(
           child: Padding(
@@ -359,21 +321,16 @@ class _HomeScreenState extends State<HomeScreen> {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Text('Pending Tickets (${dataSync.pendingTickets.length})', 
+                    Text('Tickets (${dataSync.tickets.length})', 
                          style: Theme.of(context).textTheme.titleMedium),
-                    Consumer<ConnectivityService>(
-                      builder: (context, connectivity, child) {
-                        if (!connectivity.isConnected) return SizedBox.shrink();
-                        return TextButton(
-                          onPressed: dataSync.retryPendingTickets,
-                          child: Text('Retry All'),
-                        );
-                      },
+                    TextButton(
+                      onPressed: dataSync.clearAllTickets,
+                      child: Text('Clear All'),
                     ),
                   ],
                 ),
                 SizedBox(height: 10),
-                ...dataSync.pendingTickets.map((ticket) => 
+                ...dataSync.tickets.map((ticket) => 
                   ListTile(
                     leading: Icon(_getStatusIcon(ticket.status)),
                     title: Text(ticket.description),
@@ -398,9 +355,11 @@ class _HomeScreenState extends State<HomeScreen> {
         });
       }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error picking image: $e')),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error picking image: $e')),
+        );
+      }
     }
   }
 
@@ -420,19 +379,14 @@ class _HomeScreenState extends State<HomeScreen> {
       createdAt: DateTime.now(),
     );
 
-    final connectivity = Provider.of<ConnectivityService>(context, listen: false);
     final dataSync = Provider.of<DataSyncService>(context, listen: false);
     final bluetooth = Provider.of<BluetoothService>(context, listen: false);
 
+    // Save ticket locally
     await dataSync.addTicket(ticket);
 
-    if (connectivity.isConnected) {
-      // Try to send directly to backend
-      await dataSync.syncToBackend(ticket);
-    } else {
-      // Use Bluetooth hopping
-      await bluetooth.sendTicketData(ticket);
-    }
+    // Always use Bluetooth hopping (no internet fallback)
+    await bluetooth.sendTicketData(ticket);
 
     // Clear form
     _descriptionController.clear();

@@ -1,5 +1,5 @@
-name: offline_sync_app
-description: Flutter app with image upload and Bluetooth hopping
+name: bluetooth_hopping_app
+description: Flutter app for Bluetooth data hopping between devices
 
 publish_to: 'none'
 version: 1.0.0+1
@@ -20,9 +20,9 @@ dependencies:
   image_picker: ^1.0.4
   path_provider: ^2.1.1
   
-  # Network & Connectivity
-  connectivity_plus: ^7.0.0
-  http: ^1.1.0
+  # Network (removed - pure Bluetooth app)
+  # connectivity_plus: ^7.0.0
+  # http: ^1.1.0
   
   # Bluetooth & Nearby Connections
   nearby_connections: ^4.3.0

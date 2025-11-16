@@ -10,7 +10,7 @@ class BluetoothService extends ChangeNotifier {
   
   bool _isAdvertising = false;
   bool _isDiscovering = false;
-  Set<String> _connectedDevices = {};
+  final Set<String> _connectedDevices = {};
   
   bool get isAdvertising => _isAdvertising;
   bool get isDiscovering => _isDiscovering;
@@ -308,15 +308,21 @@ class BluetoothService extends ChangeNotifier {
   }
 
   void _handleReceivedTicket(Map<String, dynamic> ticketData) {
-    // This would typically forward the data to backend if internet is available
-    // or continue the hopping process
     print('BLUETOOTH DEBUG: Received ticket data: $ticketData');
-    _updateStatus('📥 Received data from another device!');
+    _updateStatus('📥 Received ticket from another device!');
     
     // In a real implementation, you would:
-    // 1. Check if this device has internet
-    // 2. If yes, send to backend
-    // 3. If no, continue hopping to other devices
+    // 1. Save the received ticket locally
+    // 2. Continue hopping to other connected devices
+    // 3. Mark as successfully hopped
+    
+    print('📋 BLUETOOTH DEBUG: Ticket received - ID: ${ticketData['id']}, Description: ${ticketData['description']}');
+    
+    // Continue hopping to other devices if we have more connections
+    if (_connectedDevices.length > 1) {
+      print('🔄 BLUETOOTH DEBUG: Continuing hop to ${_connectedDevices.length - 1} other devices');
+      // Here you would forward to other connected devices
+    }
   }
 
   Future<void> stopDiscovery() async {
