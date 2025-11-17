@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:provider/provider.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:permission_handler/permission_handler.dart';
+
 import 'dart:io';
 import 'dart:convert';
 import 'package:image/image.dart' as img;
@@ -12,7 +12,6 @@ import 'package:path/path.dart' as path;
 import '../models/ticket_model.dart';
 import '../services/data_sync_service.dart';
 import '../services/bluetooth_service.dart';
-import '../utils/test_helper.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -43,13 +42,6 @@ class _HomeScreenState extends State<HomeScreen> {
       appBar: AppBar(
         title: Text('Bluetooth Hopping App'),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        actions: [
-          IconButton(
-            icon: Icon(Icons.help_outline),
-            onPressed: () => TestHelper.showTestDialog(context),
-            tooltip: 'Test Instructions',
-          ),
-        ],
       ),
       body: SingleChildScrollView(
         padding: EdgeInsets.all(16.0),
@@ -61,129 +53,6 @@ class _HomeScreenState extends State<HomeScreen> {
             _buildDescriptionSection(),
             SizedBox(height: 20),
             _buildSubmitButton(),
-            SizedBox(height: 10),
-            // Debug buttons for testing
-            if (kDebugMode) ...[
-              ElevatedButton(
-                onPressed: () {
-                  print('🧪 DEBUG: Test button pressed');
-                  if (_descriptionController.text.trim().isEmpty) {
-                    _descriptionController.text = 'Test ticket description';
-                  }
-                  _submitTicket();
-                },
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-                child: Text('Test Submit (Debug)', style: TextStyle(color: Colors.white)),
-              ),
-              SizedBox(height: 5),
-              ElevatedButton(
-                onPressed: () {
-                  final bluetooth = Provider.of<BluetoothService>(context, listen: false);
-                  print('🧪 DEBUG: Force broadcast test');
-                  print('🧪 DEBUG: Connected devices: ${bluetooth.connectedDevices.length}');
-                  if (bluetooth.connectedDevices.isNotEmpty) {
-                    bluetooth.broadcastCustomData({
-                      'message': 'Test broadcast from debug button',
-                      'timestamp': DateTime.now().toIso8601String(),
-                    });
-                  } else {
-                    print('🧪 DEBUG: No devices to broadcast to');
-                  }
-                },
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.purple),
-                child: Text('Force Broadcast Test', style: TextStyle(color: Colors.white)),
-              ),
-              SizedBox(height: 5),
-              ElevatedButton(
-                onPressed: () {
-                  final bluetooth = Provider.of<BluetoothService>(context, listen: false);
-                  bluetooth.testPayloadReception();
-                },
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
-                child: Text('Test Payload Reception', style: TextStyle(color: Colors.white)),
-              ),
-              SizedBox(height: 5),
-              ElevatedButton(
-                onPressed: () {
-                  final bluetooth = Provider.of<BluetoothService>(context, listen: false);
-                  bluetooth.addTestTicket();
-                },
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.indigo),
-                child: Text('Add Test Ticket', style: TextStyle(color: Colors.white)),
-              ),
-              SizedBox(height: 5),
-              ElevatedButton(
-                onPressed: () {
-                  final bluetooth = Provider.of<BluetoothService>(context, listen: false);
-                  bluetooth.addTestTicketWithImage();
-                },
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.teal),
-                child: Text('Add Test Ticket + Image', style: TextStyle(color: Colors.white)),
-              ),
-              SizedBox(height: 5),
-              ElevatedButton(
-                onPressed: () {
-                  final bluetooth = Provider.of<BluetoothService>(context, listen: false);
-                  print('🧪 DEBUG: Current state check');
-                  print('  - Advertising: ${bluetooth.isAdvertising}');
-                  print('  - Discovering: ${bluetooth.isDiscovering}');
-                  print('  - Connected: ${bluetooth.connectedDevices.length}');
-                  print('  - Received: ${bluetooth.receivedDataList.length}');
-                  
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('Check console for debug info'),
-                      backgroundColor: Colors.purple,
-                    ),
-                  );
-                },
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.purple),
-                child: Text('Debug State Check', style: TextStyle(color: Colors.white)),
-              ),
-              SizedBox(height: 5),
-              ElevatedButton(
-                onPressed: () async {
-                  final bluetooth = Provider.of<BluetoothService>(context, listen: false);
-                  print('🧪 DEBUG: Testing connection health');
-                  
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('Testing connection health...'),
-                      backgroundColor: Colors.blue,
-                    ),
-                  );
-                  
-                  await bluetooth.checkConnectionHealth();
-                  
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('Health check complete - ${bluetooth.connectedDevices.length} healthy connections'),
-                      backgroundColor: Colors.green,
-                    ),
-                  );
-                },
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.cyan),
-                child: Text('Test Connection Health', style: TextStyle(color: Colors.white)),
-              ),
-              SizedBox(height: 5),
-              ElevatedButton(
-                onPressed: () {
-                  final bluetooth = Provider.of<BluetoothService>(context, listen: false);
-                  print('🧪 DEBUG: Testing complete reception pipeline');
-                  
-                  bluetooth.testCompleteReceptionPipeline();
-                  
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('Pipeline test complete - check received data section'),
-                      backgroundColor: Colors.purple,
-                    ),
-                  );
-                },
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurple),
-                child: Text('Test Reception Pipeline', style: TextStyle(color: Colors.white)),
-              ),
-            ],
             SizedBox(height: 20),
             _buildStatusMessages(),
             SizedBox(height: 20),
@@ -199,8 +68,6 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     );
   }
-
-
 
   Widget _buildImageSection() {
     return Card(
@@ -309,11 +176,11 @@ class _HomeScreenState extends State<HomeScreen> {
     return Consumer2<DataSyncService, BluetoothService>(
       builder: (context, dataSync, bluetooth, child) {
         final canSubmit = _canSubmit();
-        print('🔍 DEBUG: Building submit button, canSubmit = $canSubmit');
+
         
         return ElevatedButton(
           onPressed: canSubmit ? () {
-            print('🎫 DEBUG: Submit button pressed');
+
             _submitTicket();
           } : null,
           style: ElevatedButton.styleFrom(
@@ -414,45 +281,6 @@ class _HomeScreenState extends State<HomeScreen> {
                   ],
                 ),
                 SizedBox(height: 10),
-                ElevatedButton.icon(
-                  onPressed: () async {
-                    await bluetooth.checkBluetoothStatus();
-                  },
-                  icon: Icon(Icons.bug_report),
-                  label: Text('Debug Status'),
-                  style: ElevatedButton.styleFrom(backgroundColor: Colors.purple),
-                ),
-                SizedBox(height: 10),
-                ElevatedButton.icon(
-                  onPressed: () => _showTestingInstructions(context),
-                  icon: Icon(Icons.help),
-                  label: Text('How to Test'),
-                  style: ElevatedButton.styleFrom(backgroundColor: Colors.blue),
-                ),
-                if (kDebugMode) ...[
-                  SizedBox(height: 10),
-                  ElevatedButton.icon(
-                    onPressed: () {
-                      // Simulate finding a device for testing
-                      final bluetooth = Provider.of<BluetoothService>(context, listen: false);
-                      bluetooth.simulateDeviceFound();
-                    },
-                    icon: Icon(Icons.android),
-                    label: Text('Simulate Device Found (Debug)'),
-                    style: ElevatedButton.styleFrom(backgroundColor: Colors.teal),
-                  ),
-                ],
-                // Add broadcast button for advertisers
-                if (bluetooth.isAdvertising && bluetooth.connectedDevices.isNotEmpty) ...[
-                  SizedBox(height: 10),
-                  ElevatedButton.icon(
-                    onPressed: () => _showBroadcastDialog(context),
-                    icon: Icon(Icons.broadcast_on_personal),
-                    label: Text('Broadcast Message (${bluetooth.connectedDevices.length} devices)'),
-                    style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
-                  ),
-                ],
-                SizedBox(height: 10),
                 Container(
                   padding: EdgeInsets.all(12),
                   decoration: BoxDecoration(
@@ -528,17 +356,6 @@ class _HomeScreenState extends State<HomeScreen> {
                   SizedBox(height: 10),
                   Text('Connected devices: ${bluetooth.connectedDevices.length}'),
                 ],
-                if (bluetooth.statusMessage.contains('❌') && bluetooth.statusMessage.contains('permissions')) ...[
-                  SizedBox(height: 10),
-                  ElevatedButton.icon(
-                    onPressed: () async {
-                      await openAppSettings();
-                    },
-                    icon: Icon(Icons.settings),
-                    label: Text('Open App Settings'),
-                    style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
-                  ),
-                ],
               ],
             ),
           ),
@@ -596,20 +413,11 @@ class _HomeScreenState extends State<HomeScreen> {
       );
       
       if (image != null) {
-        print('🖼️ IMAGE DEBUG: Original image path: ${image.path}');
-        
-        // Get file size
         final originalFile = File(image.path);
-        final originalSize = await originalFile.length();
-        print('🖼️ IMAGE DEBUG: Original size: ${(originalSize / 1024).toStringAsFixed(2)} KB');
-        
-        // Further compress the image if needed
         final compressedFile = await _compressImage(originalFile);
         
         if (compressedFile != null) {
           final compressedSize = await compressedFile.length();
-          print('🖼️ IMAGE DEBUG: Compressed size: ${(compressedSize / 1024).toStringAsFixed(2)} KB');
-          print('🖼️ IMAGE DEBUG: Compression ratio: ${((1 - compressedSize / originalSize) * 100).toStringAsFixed(1)}%');
           
           setState(() {
             _selectedImage = compressedFile;
@@ -632,7 +440,6 @@ class _HomeScreenState extends State<HomeScreen> {
         }
       }
     } catch (e) {
-      print('❌ IMAGE ERROR: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Error picking image: $e')),
@@ -644,8 +451,6 @@ class _HomeScreenState extends State<HomeScreen> {
   // Compress image to reduce size for Bluetooth transmission
   Future<File?> _compressImage(File imageFile) async {
     try {
-      print('🖼️ COMPRESSION: Starting image compression...');
-      
       // Read the image file
       final imageBytes = await imageFile.readAsBytes();
       
@@ -653,11 +458,8 @@ class _HomeScreenState extends State<HomeScreen> {
       img.Image? image = img.decodeImage(imageBytes);
       
       if (image == null) {
-        print('❌ COMPRESSION: Failed to decode image');
         return null;
       }
-      
-      print('🖼️ COMPRESSION: Original dimensions: ${image.width}x${image.height}');
       
       // Resize if image is too large (max 800x800 for Bluetooth)
       if (image.width > 800 || image.height > 800) {
@@ -666,12 +468,10 @@ class _HomeScreenState extends State<HomeScreen> {
           width: image.width > image.height ? 800 : null,
           height: image.height > image.width ? 800 : null,
         );
-        print('🖼️ COMPRESSION: Resized to: ${image.width}x${image.height}');
       }
       
       // Compress as JPEG with quality 85
       final compressedBytes = img.encodeJpg(image, quality: 85);
-      print('🖼️ COMPRESSION: Compressed to ${(compressedBytes.length / 1024).toStringAsFixed(2)} KB');
       
       // Save compressed image to temp file
       final tempDir = await getTemporaryDirectory();
@@ -679,27 +479,20 @@ class _HomeScreenState extends State<HomeScreen> {
       final compressedFile = File(path.join(tempDir.path, fileName));
       await compressedFile.writeAsBytes(compressedBytes);
       
-      print('✅ COMPRESSION: Image compressed successfully');
       return compressedFile;
       
     } catch (e) {
-      print('❌ COMPRESSION ERROR: $e');
       return null;
     }
   }
 
   bool _canSubmit() {
-    final canSubmit = _descriptionController.text.trim().isNotEmpty;
-    print('🔍 DEBUG: _canSubmit() = $canSubmit, text = "${_descriptionController.text}"');
-    return canSubmit;
+    return _descriptionController.text.trim().isNotEmpty;
   }
 
   Future<void> _submitTicket() async {
-    print('🎫 SUBMIT: Starting ticket submission...');
-    
     final description = _descriptionController.text.trim();
     if (description.isEmpty) {
-      print('❌ SUBMIT: Empty description');
       _showMessage('❌ Please enter a description', Colors.red);
       return;
     }
@@ -713,35 +506,27 @@ class _HomeScreenState extends State<HomeScreen> {
       createdAt: DateTime.now(),
     );
 
-    print('🎫 SUBMIT: Created ticket ID: ${ticket.id}');
-    print('🎫 SUBMIT: Has image: ${ticket.imageFile != null}');
-
     final dataSync = Provider.of<DataSyncService>(context, listen: false);
     final bluetooth = Provider.of<BluetoothService>(context, listen: false);
 
     // Save locally first
     try {
       await dataSync.addTicket(ticket);
-      print('🎫 SUBMIT: Saved locally');
     } catch (e) {
-      print('❌ SUBMIT: Local save failed: $e');
       _showMessage('❌ Failed to save ticket', Colors.red);
       return;
     }
 
     // Check for connected devices and verify connections
     final deviceCount = bluetooth.connectedDevices.length;
-    print('🎫 SUBMIT: Connected devices: $deviceCount');
     
     if (deviceCount == 0) {
-      print('🎫 SUBMIT: No devices connected, local only');
       _showMessage('📝 Ticket saved locally (no connected devices)', Colors.orange);
       _clearForm();
       return;
     }
 
     // Check connection health before sending
-    print('🎫 SUBMIT: Checking connection health...');
     _showMessage('🔍 Verifying connections...', Colors.blue);
     
     try {
@@ -749,25 +534,17 @@ class _HomeScreenState extends State<HomeScreen> {
       final healthyDeviceCount = bluetooth.connectedDevices.length;
       
       if (healthyDeviceCount == 0) {
-        print('🎫 SUBMIT: No healthy connections found');
         _showMessage('❌ No active connections found', Colors.red);
         return;
       }
-      
-      if (healthyDeviceCount != deviceCount) {
-        print('🎫 SUBMIT: Some connections were stale, now have $healthyDeviceCount healthy connections');
-      }
 
       // Attempt to send
-      print('🎫 SUBMIT: Attempting to send to $healthyDeviceCount devices...');
       _showMessage('📡 Sending to $healthyDeviceCount devices...', Colors.blue);
 
       await bluetooth.sendTicketData(ticket);
-      print('🎫 SUBMIT: Send successful');
       _showMessage('✅ Ticket sent successfully!', Colors.green);
       
     } catch (e) {
-      print('❌ SUBMIT: Send failed: $e');
       _showMessage('❌ Send failed: ${e.toString()}', Colors.red);
     }
 
@@ -791,7 +568,6 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {
       _selectedImage = null;
     });
-    print('🎫 SUBMIT: Form cleared');
   }
 
   IconData _getStatusIcon(TicketStatus status) {
@@ -857,77 +633,11 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  void _showTestingInstructions(BuildContext context) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('How to Test Bluetooth Discovery'),
-        content: SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text('Nearby Connections only finds devices running this SAME app:', 
-                   style: TextStyle(fontWeight: FontWeight.bold)),
-              SizedBox(height: 10),
-              Text('1. Install this app on a second device'),
-              Text('2. On Device A: Tap "Start Advertising"'),
-              Text('3. On Device B: Tap "Find Devices"'),
-              Text('4. Device B should find Device A within 30 seconds'),
-              SizedBox(height: 10),
-              Container(
-                padding: EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: Colors.red[50],
-                  border: Border.all(color: Colors.red),
-                  borderRadius: BorderRadius.circular(4),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('Will NOT find:', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.red)),
-                    Text('• Regular Bluetooth devices (headphones, speakers)', style: TextStyle(color: Colors.red)),
-                    Text('• Devices without this app', style: TextStyle(color: Colors.red)),
-                    Text('• Devices not advertising', style: TextStyle(color: Colors.red)),
-                  ],
-                ),
-              ),
-              SizedBox(height: 10),
-              Container(
-                padding: EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: Colors.green[50],
-                  border: Border.all(color: Colors.green),
-                  borderRadius: BorderRadius.circular(4),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('Will find:', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.green)),
-                    Text('• Devices running this exact app', style: TextStyle(color: Colors.green)),
-                    Text('• Devices actively advertising', style: TextStyle(color: Colors.green)),
-                    Text('• Same service ID: com.yourapp.offlineSync', style: TextStyle(color: Colors.green, fontSize: 12)),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: Text('Got it!'),
-          ),
-        ],
-      ),
-    );
-  }
-
   Widget _buildReceivedData() {
     return Consumer<BluetoothService>(
       builder: (context, bluetooth, child) {
         final itemCount = bluetooth.receivedDataList.length;
-        print('🖥️ UI: Building received data section, items: $itemCount');
+
         
         return Card(
           elevation: 2,
@@ -949,14 +659,6 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                     Row(
                       children: [
-                        if (kDebugMode)
-                          TextButton(
-                            onPressed: () {
-                              print('🔄 UI: Manual refresh');
-                              setState(() {});
-                            },
-                            child: Text('Refresh'),
-                          ),
                         if (itemCount > 0)
                           TextButton(
                             onPressed: () {
@@ -1064,20 +766,19 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _buildReceivedDataContent(Map<String, dynamic> data) {
     final type = data['type'] as String?;
     
-    print('🖥️ UI DEBUG: Building content for data type: $type');
-    print('🖥️ UI DEBUG: Data keys: ${data.keys.toList()}');
+
     
     // CRITICAL FIX: More flexible data type matching
     // First check if it has ticket data regardless of type
     final ticket = data['ticket'] as Map<String, dynamic>?;
     if (ticket != null) {
-      print('✅ UI DEBUG: Found ticket data, displaying');
+
       return _buildReceivedTicket(data);
     }
     
     // Check for ticket-related types (flexible matching)
     if (type != null && (type == 'ticket_data' || type == 'ticket_metadata' || type.contains('ticket'))) {
-      print('✅ UI DEBUG: Ticket-related type detected: $type');
+
       return _buildReceivedTicket(data);
     }
     
@@ -1092,7 +793,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     
     // Last resort: show raw data in a friendly way
-    print('⚠️ UI DEBUG: Unknown format, showing raw data');
+
     return Container(
       padding: EdgeInsets.all(12),
       decoration: BoxDecoration(
@@ -1131,11 +832,11 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildReceivedTicket(Map<String, dynamic> data) {
-    print('🖥️ UI DEBUG: Building received ticket display');
+
     final ticket = data['ticket'] as Map<String, dynamic>?;
     
     if (ticket == null) {
-      print('❌ UI DEBUG: Ticket data is null');
+
       return Container(
         padding: EdgeInsets.all(8),
         decoration: BoxDecoration(
@@ -1151,7 +852,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final createdAt = ticket['createdAt'] as String?;
     final ticketId = ticket['id'] as String? ?? 'Unknown ID';
 
-    print('🖥️ UI DEBUG: Ticket details - ID: $ticketId, Has image: ${imageBase64 != null}, Description length: ${description.length}');
+
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1206,7 +907,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   base64Decode(imageBase64),
                   fit: BoxFit.cover,
                   errorBuilder: (context, error, stackTrace) {
-                    print('❌ UI DEBUG: Error displaying image: $error');
+
                     return Container(
                       color: Colors.grey[200],
                       child: Center(
@@ -1375,48 +1076,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
 
 
-  void _showBroadcastDialog(BuildContext context) {
-    final TextEditingController messageController = TextEditingController();
-    
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Broadcast Message'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text('Send a message to all connected devices:'),
-            SizedBox(height: 10),
-            TextField(
-              controller: messageController,
-              decoration: InputDecoration(
-                hintText: 'Enter your message...',
-                border: OutlineInputBorder(),
-              ),
-              maxLines: 3,
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              final message = messageController.text.trim();
-              if (message.isNotEmpty) {
-                final bluetooth = Provider.of<BluetoothService>(context, listen: false);
-                bluetooth.broadcastCustomData({'message': message});
-                Navigator.of(context).pop();
-              }
-            },
-            child: Text('Broadcast'),
-          ),
-        ],
-      ),
-    );
-  }
+
 
   @override
   void dispose() {

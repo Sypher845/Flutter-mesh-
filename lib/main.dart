@@ -3,11 +3,8 @@ import 'package:provider/provider.dart';
 import 'screens/home_screen.dart';
 import 'services/data_sync_service.dart';
 import 'services/bluetooth_service.dart';
-import 'utils/test_helper.dart';
 
 void main() {
-  // Print test info to console
-  TestHelper.printTestInfo();
   runApp(MyApp());
 }
 
