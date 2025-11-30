@@ -1,6 +1,6 @@
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
-import '../models/ticket_model.dart';
+import '../models/report_model.dart';
 
 class LocalStorageService {
   static Database? _database;
@@ -13,21 +13,28 @@ class LocalStorageService {
 
   Future<Database> _initDatabase() async {
     final dbPath = await getDatabasesPath();
-    final path = join(dbPath, 'tickets.db');
+    final path = join(dbPath, 'reports.db');
     
     return await openDatabase(
       path,
-      version: 1,
+      version: 2,
       onCreate: _createTables,
+      onUpgrade: _onUpgrade,
     );
   }
 
   Future<void> _createTables(Database db, int version) async {
     await db.execute('''
-      CREATE TABLE tickets (
+      CREATE TABLE reports (
         id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
         description TEXT NOT NULL,
         imagePath TEXT,
+        latitude REAL,
+        longitude REAL,
+        locationAccuracy REAL,
+        locationTimestamp TEXT,
+        hazardType TEXT NOT NULL,
         createdAt TEXT NOT NULL,
         status TEXT NOT NULL,
         retryCount INTEGER DEFAULT 0
@@ -35,58 +42,124 @@ class LocalStorageService {
     ''');
   }
 
-  Future<void> saveTicket(TicketModel ticket) async {
+  Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      await db.execute('DROP TABLE IF EXISTS tickets');
+      await _createTables(db, newVersion);
+    }
+  }
+
+  Future<void> saveReport(ReportModel report) async {
     final db = await database;
+    final json = report.toJson();
+    
+    final Map<String, dynamic> dbData = {
+      'id': json['id'],
+      'title': json['title'],
+      'description': json['description'],
+      'imagePath': json['imagePath'],
+      'latitude': json['location']?['latitude'],
+      'longitude': json['location']?['longitude'],
+      'locationAccuracy': json['location']?['accuracy'],
+      'locationTimestamp': json['location']?['timestamp'],
+      'hazardType': json['hazardType'],
+      'createdAt': json['createdAt'],
+      'status': json['status'],
+      'retryCount': json['retryCount'],
+    };
+    
     await db.insert(
-      'tickets',
-      ticket.toJson(),
+      'reports',
+      dbData,
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
   }
 
-  Future<List<TicketModel>> getPendingTickets() async {
+  Future<List<ReportModel>> getPendingReports() async {
     final db = await database;
     final List<Map<String, dynamic>> maps = await db.query(
-      'tickets',
+      'reports',
       where: 'status != ?',
-      whereArgs: [TicketStatus.sent.toString()],
+      whereArgs: [ReportStatus.sent.toString()],
     );
 
-    return List.generate(maps.length, (i) {
-      return TicketModel.fromJson(maps[i]);
-    });
+    return _mapsToReports(maps);
   }
 
-  Future<void> updateTicket(TicketModel ticket) async {
+  Future<void> updateReport(ReportModel report) async {
     final db = await database;
+    final json = report.toJson();
+    
+    final Map<String, dynamic> dbData = {
+      'id': json['id'],
+      'title': json['title'],
+      'description': json['description'],
+      'imagePath': json['imagePath'],
+      'latitude': json['location']?['latitude'],
+      'longitude': json['location']?['longitude'],
+      'locationAccuracy': json['location']?['accuracy'],
+      'locationTimestamp': json['location']?['timestamp'],
+      'hazardType': json['hazardType'],
+      'createdAt': json['createdAt'],
+      'status': json['status'],
+      'retryCount': json['retryCount'],
+    };
+    
     await db.update(
-      'tickets',
-      ticket.toJson(),
+      'reports',
+      dbData,
       where: 'id = ?',
-      whereArgs: [ticket.id],
+      whereArgs: [report.id],
     );
   }
 
-  Future<void> deleteTicket(String id) async {
+  Future<void> deleteReport(String id) async {
     final db = await database;
     await db.delete(
-      'tickets',
+      'reports',
       where: 'id = ?',
       whereArgs: [id],
     );
   }
 
-  Future<void> clearAllTickets() async {
+  Future<void> clearAllReports() async {
     final db = await database;
-    await db.delete('tickets');
+    await db.delete('reports');
   }
 
-  Future<List<TicketModel>> getAllTickets() async {
+  Future<List<ReportModel>> getAllReports() async {
     final db = await database;
-    final List<Map<String, dynamic>> maps = await db.query('tickets');
+    final List<Map<String, dynamic>> maps = await db.query('reports');
+    return _mapsToReports(maps);
+  }
 
+  List<ReportModel> _mapsToReports(List<Map<String, dynamic>> maps) {
     return List.generate(maps.length, (i) {
-      return TicketModel.fromJson(maps[i]);
+      final map = maps[i];
+      
+      LocationData? location;
+      if (map['latitude'] != null && map['longitude'] != null) {
+        location = LocationData(
+          latitude: map['latitude'],
+          longitude: map['longitude'],
+          accuracy: map['locationAccuracy'],
+          timestamp: DateTime.parse(map['locationTimestamp']),
+        );
+      }
+      
+      final json = {
+        'id': map['id'],
+        'title': map['title'],
+        'description': map['description'],
+        'imagePath': map['imagePath'],
+        'location': location?.toJson(),
+        'hazardType': map['hazardType'],
+        'createdAt': map['createdAt'],
+        'status': map['status'],
+        'retryCount': map['retryCount'],
+      };
+      
+      return ReportModel.fromJson(json);
     });
   }
 }

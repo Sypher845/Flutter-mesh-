@@ -19,9 +19,9 @@ class MyApp extends StatelessWidget {
         ChangeNotifierProvider(create: (_) => BluetoothService()),
       ],
       child: MaterialApp(
-        title: 'Bluetooth Hopping App',
+        title: 'Hazard Reporter',
         theme: ThemeData(
-          primarySwatch: Colors.blue,
+          primarySwatch: Colors.orange,
           useMaterial3: true,
         ),
         home: HomeScreen(),

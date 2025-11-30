@@ -3,9 +3,8 @@ import 'package:nearby_connections/nearby_connections.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'dart:convert';
 import 'dart:async';
-import 'dart:typed_data';
 
-import '../models/ticket_model.dart';
+import '../models/report_model.dart';
 
 class ReceivedData {
   final String senderId;
@@ -330,10 +329,11 @@ class BluetoothService extends ChangeNotifier {
         return;
       }
       
-      if (dataType == 'ticket_data' || dataType == 'ticket_metadata' || dataType.contains('ticket')) {
-        final ticket = receivedData['ticket'] as Map<String, dynamic>?;
-        if (ticket == null) {
-          _updateStatus('❌ Invalid ticket data received');
+      if (dataType == 'report_data' || dataType == 'report_metadata' || dataType.contains('report') || 
+          dataType == 'ticket_data' || dataType.contains('ticket')) {
+        final report = receivedData['report'] as Map<String, dynamic>? ?? receivedData['ticket'] as Map<String, dynamic>?;
+        if (report == null) {
+          _updateStatus('❌ Invalid report data received');
           return;
         }
       }
@@ -416,7 +416,7 @@ class BluetoothService extends ChangeNotifier {
     }
   }
 
-  Future<void> sendTicketData(TicketModel ticket) async {
+  Future<void> sendReportData(ReportModel report) async {
     if (_connectedDevices.isEmpty) {
       _updateStatus('❌ No connected devices to send to');
       throw Exception('No connected devices available');
@@ -433,9 +433,9 @@ class BluetoothService extends ChangeNotifier {
 
     try {
       String? imageBase64;
-      if (ticket.imageFile != null) {
+      if (report.imageFile != null) {
         try {
-          final imageBytes = await ticket.imageFile!.readAsBytes();
+          final imageBytes = await report.imageFile!.readAsBytes();
           
           if (imageBytes.length > 200 * 1024) {
             _updateStatus('⚠️ Image too large, sending without image');
@@ -452,19 +452,19 @@ class BluetoothService extends ChangeNotifier {
         }
       }
 
-      final ticketData = ticket.toJson();
+      final reportData = report.toJson();
       if (imageBase64 != null) {
-        ticketData['imageBase64'] = imageBase64;
+        reportData['imageBase64'] = imageBase64;
       }
 
       final payloadId = DateTime.now().millisecondsSinceEpoch;
       final payload = {
-        'type': 'ticket_data',
+        'type': 'report_data',
         'payloadId': payloadId,
         'senderId': 'device_$payloadId',
         'senderName': 'My Device',
         'timestamp': DateTime.now().toIso8601String(),
-        'ticket': ticketData,
+        'report': reportData,
       };
 
       final jsonString = jsonEncode(payload);
@@ -489,9 +489,9 @@ class BluetoothService extends ChangeNotifier {
       }
 
       if (successCount > 0) {
-        _updateStatus('✅ Ticket sent to $successCount/${activeDevices.length} devices');
+        _updateStatus('✅ Report sent to $successCount/${activeDevices.length} devices');
       } else {
-        _updateStatus('❌ Failed to send ticket to any devices');
+        _updateStatus('❌ Failed to send report to any devices');
         throw Exception('Send failed to all devices');
       }
     } catch (e) {
