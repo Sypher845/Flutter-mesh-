@@ -41,6 +41,16 @@ class BluetoothService extends ChangeNotifier {
 
   BluetoothService() {
     _startPeriodicHealthCheck();
+    _initializeAutoDiscovery();
+  }
+
+  Future<void> _initializeAutoDiscovery() async {
+    // Auto-start discovery when service is created
+    await Future.delayed(Duration(seconds: 2));
+    if (!_isDiscovering && !_isAdvertising) {
+      await startAdvertising();
+      await startDiscovery();
+    }
   }
 
   void _startPeriodicHealthCheck() {
@@ -417,8 +427,22 @@ class BluetoothService extends ChangeNotifier {
   }
 
   Future<void> sendReportData(ReportModel report) async {
+    // Ensure advertising and discovery are running
+    if (!_isAdvertising) {
+      await startAdvertising();
+    }
+    if (!_isDiscovering) {
+      await startDiscovery();
+    }
+
+    // Wait a bit for connections to establish
     if (_connectedDevices.isEmpty) {
-      _updateStatus('❌ No connected devices to send to');
+      _updateStatus('🔍 Searching for nearby devices...');
+      await Future.delayed(Duration(seconds: 3));
+    }
+
+    if (_connectedDevices.isEmpty) {
+      _updateStatus('⚠️ No devices found nearby - Report saved locally');
       throw Exception('No connected devices available');
     }
 

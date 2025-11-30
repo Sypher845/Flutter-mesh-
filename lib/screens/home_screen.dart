@@ -14,9 +14,9 @@ import '../widgets/hazard_type_selector.dart';
 import '../widgets/location_section.dart';
 import '../widgets/status_messages.dart';
 import '../widgets/emulator_warning.dart';
-import '../widgets/bluetooth_controls.dart';
 import '../widgets/received_data_section.dart';
 import '../widgets/tickets_list.dart';
+import '../widgets/permission_dialog.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -40,6 +40,15 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     _titleController.addListener(() => setState(() {}));
     _descriptionController.addListener(() => setState(() {}));
+    _checkAndRequestPermissions();
+  }
+
+  Future<void> _checkAndRequestPermissions() async {
+    await Future.delayed(Duration(milliseconds: 500));
+    
+    if (mounted) {
+      await PermissionDialog.showIfNeeded(context);
+    }
   }
 
   @override
@@ -79,8 +88,6 @@ class _HomeScreenState extends State<HomeScreen> {
             StatusMessages(),
             SizedBox(height: 20),
             EmulatorWarning(),
-            SizedBox(height: 20),
-            BluetoothControls(),
             SizedBox(height: 20),
             ReceivedDataSection(),
             SizedBox(height: 20),
@@ -228,31 +235,23 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
-    final deviceCount = bluetooth.connectedDevices.length;
-    
-    if (deviceCount == 0) {
-      _showMessage('📝 Report saved locally (no connected devices)', Colors.orange);
-      _clearForm();
-      return;
-    }
-
-    _showMessage('🔍 Verifying connections...', Colors.blue);
+    // Automatically start advertising and discovery
+    _showMessage('📡 Broadcasting report to nearby devices...', Colors.blue);
     
     try {
-      await bluetooth.checkConnectionHealth();
-      final healthyDeviceCount = bluetooth.connectedDevices.length;
-      
-      if (healthyDeviceCount == 0) {
-        _showMessage('❌ No active connections found', Colors.red);
-        return;
-      }
-
-      _showMessage('📡 Sending to $healthyDeviceCount devices...', Colors.blue);
+      // Ensure Bluetooth is active and send report
       await bluetooth.sendReportData(report);
-      _showMessage('✅ Report sent successfully!', Colors.green);
+      
+      final sentCount = bluetooth.connectedDevices.length;
+      if (sentCount > 0) {
+        _showMessage('✅ Report sent to $sentCount device(s)!', Colors.green);
+      } else {
+        _showMessage('📝 Report saved locally - No nearby devices found', Colors.orange);
+      }
       
     } catch (e) {
-      _showMessage('❌ Send failed: ${e.toString()}', Colors.red);
+      // Report is already saved locally, just inform user
+      _showMessage('📝 Report saved locally - Will sync when devices are nearby', Colors.orange);
     }
 
     _clearForm();
