@@ -1,681 +1,686 @@
-import 'package:flutter/foundation.dart';
-import 'package:nearby_connections/nearby_connections.dart';
-import 'package:permission_handler/permission_handler.dart';
-import 'dart:convert';
 import 'dart:async';
-
+import 'dart:convert';
+import 'dart:io';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart' as fbp;
+import 'package:permission_handler/permission_handler.dart';
 import '../models/report_model.dart';
 
-class ReceivedData {
-  final String senderId;
-  final String senderName;
-  final Map<String, dynamic> data;
-  final DateTime receivedAt;
-  String? receivedImagePath;
-
-  ReceivedData({
-    required this.senderId,
-    required this.senderName,
-    required this.data,
-    required this.receivedAt,
-    this.receivedImagePath,
-  });
+// Custom enum to avoid conflict with flutter_blue_plus
+enum BleConnectionState { 
+  disconnected, 
+  connecting, 
+  connected, 
+  scanning, 
+  broadcasting 
 }
 
-class BluetoothService extends ChangeNotifier {
-  static const String _serviceId = 'com.yourapp.offlineSync';
-  
-  bool _isAdvertising = false;
-  bool _isDiscovering = false;
-  final Set<String> _connectedDevices = {};
-  final List<ReceivedData> _receivedDataList = [];
-  Timer? _healthCheckTimer;
-  
-  bool get isAdvertising => _isAdvertising;
-  bool get isDiscovering => _isDiscovering;
-  Set<String> get connectedDevices => _connectedDevices;
-  List<ReceivedData> get receivedDataList => List.unmodifiable(_receivedDataList);
-  
-  String _statusMessage = '';
-  String get statusMessage => _statusMessage;
+class BluetoothService {
+  static final BluetoothService _instance = BluetoothService._internal();
+  factory BluetoothService() => _instance;
+  BluetoothService._internal();
 
-  BluetoothService() {
-    _startPeriodicHealthCheck();
-    _initializeAutoDiscovery();
-  }
+  BleConnectionState _connectionState = BleConnectionState.disconnected;
+  BleConnectionState get connectionState => _connectionState;
 
-  Future<void> _initializeAutoDiscovery() async {
-    // Auto-start discovery when service is created
-    await Future.delayed(Duration(seconds: 2));
-    if (!_isDiscovering && !_isAdvertising) {
-      await startAdvertising();
-      await startDiscovery();
+  // Scanning
+  StreamSubscription<List<fbp.ScanResult>>? _scanSubscription;
+  final _scanResultsController = StreamController<List<fbp.ScanResult>>.broadcast();
+  Stream<List<fbp.ScanResult>> get scanResults => _scanResultsController.stream;
+  bool _isScanning = false;
+
+  // Multiple device connections (mesh network)
+  final Map<String, fbp.BluetoothDevice> _connectedDevices = {};
+  final Map<String, StreamSubscription<fbp.BluetoothConnectionState>> _connectionSubscriptions = {};
+  final Map<String, List<StreamSubscription<List<int>>>> _characteristicSubscriptions = {};
+  final Map<String, List<fbp.BluetoothService>> _deviceServices = {};
+
+  // Broadcasting
+  Timer? _broadcastTimer;
+  bool _isBroadcasting = false;
+
+  // Use lowercase with underscores for constants
+  static const String serviceUuid = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
+  static const String characteristicUuid = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
+
+  // MTU and chunking
+  static const int defaultMtu = 512;
+  static const int chunkSize = 400; // Leave room for headers
+  int _currentMtu = defaultMtu;
+
+  // Deduplication
+  final Set<String> _processedReportIds = {};
+  static const int maxProcessedReports = 1000;
+
+  // Retry configuration
+  static const int maxRetryAttempts = 3;
+  static const Duration retryDelay = Duration(seconds: 2);
+  static const Duration connectionTimeout = Duration(seconds: 15);
+
+  // Callbacks
+  Function(ReportModel)? onReportReceived;
+  Function(String)? onError;
+  Function(BleConnectionState)? onStateChanged;
+
+  // Dispose flag
+  bool _isDisposed = false;
+
+  // Initialize Bluetooth and request permissions
+  Future<void> initialize() async {
+    if (_isDisposed) {
+      throw Exception('BluetoothService has been disposed');
     }
-  }
 
-  void _startPeriodicHealthCheck() {
-    _healthCheckTimer?.cancel();
-    _healthCheckTimer = Timer.periodic(Duration(seconds: 30), (timer) async {
-      if (_connectedDevices.isNotEmpty) {
-        try {
-          await _verifyAndCleanConnections();
-        } catch (e) {
-          // Silently handle health check errors
+    try {
+      // Check Bluetooth support
+      if (await fbp.FlutterBluePlus.isSupported == false) {
+        throw Exception("Bluetooth not supported by this device");
+      }
+
+      // Request permissions
+      await _requestPermissions();
+
+      // Check if Bluetooth is on
+      final adapterState = await fbp.FlutterBluePlus.adapterState.first;
+      if (adapterState != fbp.BluetoothAdapterState.on) {
+        // On Android, we can request to turn on Bluetooth
+        if (Platform.isAndroid) {
+          await fbp.FlutterBluePlus.turnOn();
+          // Wait for Bluetooth to turn on
+          await Future.delayed(const Duration(seconds: 2));
+        } else {
+          throw Exception('Please enable Bluetooth');
         }
       }
-    });
-  }
 
-  @override
-  void dispose() {
-    _healthCheckTimer?.cancel();
-    stopAll();
-    super.dispose();
-  }
-
-  Future<bool> _requestPermissions() async {
-    bool locationGranted = false;
-    
-    try {
-      final locationStatus = await Permission.locationWhenInUse.request();
-      locationGranted = locationStatus == PermissionStatus.granted || locationStatus == PermissionStatus.limited;
-    } catch (e) {
-      // Continue
-    }
-    
-    if (!locationGranted) {
-      try {
-        final locationStatus = await Permission.location.request();
-        locationGranted = locationStatus == PermissionStatus.granted || locationStatus == PermissionStatus.limited;
-      } catch (e) {
-        // Continue
-      }
-    }
-    
-    if (!locationGranted) {
-      try {
-        final fineLocationStatus = await Permission.locationAlways.request();
-        locationGranted = fineLocationStatus == PermissionStatus.granted || fineLocationStatus == PermissionStatus.limited;
-      } catch (e) {
-        // Continue
-      }
-    }
-    
-    final bluetoothPermissions = [
-      Permission.bluetoothConnect,
-      Permission.bluetoothScan,
-      Permission.bluetoothAdvertise,
-    ];
-
-    Map<Permission, PermissionStatus> bluetoothStatuses = await bluetoothPermissions.request();
-    
-    bool bluetoothGranted = bluetoothStatuses.values.every((status) => 
-      status == PermissionStatus.granted || status == PermissionStatus.limited);
-    
-    if (!bluetoothGranted || !locationGranted) {
-      return false;
-    }
-
-    try {
-      await Permission.nearbyWifiDevices.request();
-    } catch (e) {
-      // Optional permission
-    }
-
-    return true;
-  }
-
-  Future<void> startAdvertising() async {
-    if (_isAdvertising) {
-      _updateStatus('Advertising is already running');
-      return;
-    }
-
-    if (!await _requestPermissions()) {
-      _updateStatus('❌ Bluetooth permissions denied. Check app settings.');
-      return;
-    }
-
-    try {
-      await Nearby().startAdvertising(
-        'OfflineSyncDevice',
-        Strategy.P2P_CLUSTER,
-        onConnectionInitiated: _onConnectionInitiated,
-        onConnectionResult: _onConnectionResult,
-        onDisconnected: _onDisconnected,
-        serviceId: _serviceId,
-      );
-      
-      _isAdvertising = true;
-      _updateStatus('📡 Started advertising');
-      notifyListeners();
-    } catch (e) {
-      if (e.toString().contains('STATUS_ALREADY_ADVERTISING') || 
-          e.toString().contains('8001')) {
-        _updateStatus('Advertising is already running');
-        _isAdvertising = true;
-      } else {
-        _updateStatus('Failed to start advertising');
-      }
-      notifyListeners();
-    }
-  }
-
-  Future<void> startDiscovery() async {
-    if (_isDiscovering) {
-      _updateStatus('Discovery is already running');
-      return;
-    }
-
-    if (!await _requestPermissions()) {
-      _updateStatus('❌ Bluetooth permissions denied. Check app settings.');
-      return;
-    }
-
-    try {
-      await Nearby().startDiscovery(
-        'OfflineSyncDevice',
-        Strategy.P2P_CLUSTER,
-        onEndpointFound: _onEndpointFound,
-        onEndpointLost: _onEndpointLost,
-        serviceId: _serviceId,
-      );
-      
-      _isDiscovering = true;
-      _updateStatus('🔍 Scanning for nearby devices...');
-      notifyListeners();
-    } catch (e) {
-      if (e.toString().contains('STATUS_ALREADY_DISCOVERING') || 
-          e.toString().contains('8002')) {
-        _updateStatus('Discovery is already running');
-        _isDiscovering = true;
-      } else {
-        _updateStatus('Failed to start discovery');
-      }
-      notifyListeners();
-    }
-  }
-
-  void _onEndpointFound(String endpointId, String endpointName, String serviceId) {
-    _updateStatus('📱 Found device: $endpointName');
-    
-    if (serviceId == _serviceId) {
-      _requestConnection(endpointId);
-    }
-  }
-
-  void _onEndpointLost(String? endpointId) {
-    if (endpointId != null && _connectedDevices.contains(endpointId)) {
-      _connectedDevices.remove(endpointId);
-      notifyListeners();
-    }
-    _updateStatus('📤 Lost device: $endpointId');
-  }
-
-  Future<void> _requestConnection(String endpointId) async {
-    try {
-      await Nearby().requestConnection(
-        'OfflineSyncDevice',
-        endpointId,
-        onConnectionInitiated: _onConnectionInitiated,
-        onConnectionResult: _onConnectionResult,
-        onDisconnected: _onDisconnected,
-      );
-    } catch (e) {
-      _updateStatus('❌ Failed to connect to device');
-    }
-  }
-
-  void _onConnectionInitiated(String endpointId, ConnectionInfo connectionInfo) async {
-    _updateStatus('🔗 Connection initiated with ${connectionInfo.endpointName}');
-    
-    try {
-      await Nearby().acceptConnection(
-        endpointId,
-        onPayLoadRecieved: (String receivedEndpointId, Payload receivedPayload) {
-          try {
-            _onPayloadReceived(receivedEndpointId, receivedPayload);
-          } catch (e) {
-            _updateStatus('⚠️ Received data but processing failed');
-          }
-        },
-      );
-      
-      Timer(Duration(seconds: 2), () {
-        if (_connectedDevices.contains(endpointId)) {
-          _sendConnectionPing(endpointId);
+      // Listen to adapter state changes - FIX THIS
+      fbp.FlutterBluePlus.adapterState.listen((state) {
+        if (state == fbp.BluetoothAdapterState.off && !_isDisposed) {
+          _handleBluetoothOff();
         }
       });
+
+      // Start continuous scanning
+      await startScanning();
+
+      print('✓ Bluetooth initialized successfully');
     } catch (e) {
-      _updateStatus('❌ Failed to accept connection');
-    }
-  }
-
-  void _onConnectionResult(String endpointId, Status status) {
-    if (status == Status.CONNECTED) {
-      _connectedDevices.add(endpointId);
-      _updateStatus('✅ Connected to device');
-      _reRegisterPayloadCallback(endpointId);
-      notifyListeners();
-    } else {
-      _updateStatus('❌ Failed to connect to device');
-      _connectedDevices.remove(endpointId);
-    }
-  }
-
-  void _reRegisterPayloadCallback(String endpointId) {
-    try {
-      Timer(Duration(milliseconds: 500), () {
-        if (_connectedDevices.contains(endpointId)) {
-          _sendConnectionPing(endpointId);
-        }
-      });
-    } catch (e) {
-      // Ignore
-    }
-  }
-
-  void _onDisconnected(String endpointId) {
-    _connectedDevices.remove(endpointId);
-    _updateStatus('💔 Disconnected from device');
-    notifyListeners();
-  }
-
-  void _onPayloadReceived(String endpointId, Payload payload) {
-    try {
-      if (payload.type == PayloadType.BYTES) {
-        _processReceivedPayload(endpointId, payload);
-        _sendAcknowledgment(endpointId, payload.id);
-      } else {
-        _updateStatus('⚠️ Received unsupported payload type');
-      }
-    } catch (e) {
-      _updateStatus('❌ Error processing received payload');
-    }
-  }
-
-  void _processReceivedPayload(String endpointId, Payload payload) {
-    try {
-      if (payload.bytes == null || payload.bytes!.isEmpty) {
-        _updateStatus('❌ Received empty payload');
-        return;
-      }
-      
-      String jsonString;
-      try {
-        jsonString = utf8.decode(payload.bytes!);
-      } catch (e) {
-        try {
-          jsonString = String.fromCharCodes(payload.bytes!);
-        } catch (e2) {
-          _updateStatus('❌ Invalid payload format');
-          return;
-        }
-      }
-      
-      final Map<String, dynamic> receivedData;
-      try {
-        receivedData = jsonDecode(jsonString) as Map<String, dynamic>;
-      } catch (e) {
-        _updateStatus('❌ Invalid JSON format received');
-        return;
-      }
-      
-      final dataType = receivedData['type'] as String?;
-      final senderId = receivedData['senderId'] as String?;
-      final senderName = receivedData['senderName'] as String?;
-      
-      if (dataType == null) {
-        _updateStatus('❌ Invalid data structure');
-        return;
-      }
-      
-      if (dataType == 'ping' || dataType == 'connection_verify') {
-        _updateStatus('📡 Connection verified');
-        return;
-      }
-      
-      if (dataType == 'ack') {
-        return;
-      }
-      
-      if (dataType == 'report_data' || dataType == 'report_metadata' || dataType.contains('report') || 
-          dataType == 'ticket_data' || dataType.contains('ticket')) {
-        final report = receivedData['report'] as Map<String, dynamic>? ?? receivedData['ticket'] as Map<String, dynamic>?;
-        if (report == null) {
-          _updateStatus('❌ Invalid report data received');
-          return;
-        }
-      }
-      
-      if (dataType == 'custom_data') {
-        // Handle custom data
-      }
-      
-      final receivedDataObj = ReceivedData(
-        senderId: senderId ?? endpointId,
-        senderName: senderName ?? 'Unknown Device',
-        data: receivedData,
-        receivedAt: DateTime.now(),
-      );
-      
-      final isDuplicate = _receivedDataList.any((item) => 
-        item.senderId == receivedDataObj.senderId && 
-        item.data['timestamp'] == receivedDataObj.data['timestamp']
-      );
-      
-      if (!isDuplicate) {
-        _receivedDataList.add(receivedDataObj);
-        
-        while (_receivedDataList.length > 20) {
-          _receivedDataList.removeAt(0);
-        }
-        
-        _updateStatus('📥 Received $dataType from ${senderName ?? 'Unknown'}');
-        notifyListeners();
-      } else {
-        notifyListeners();
-      }
-    } catch (e) {
-      _updateStatus('❌ Error processing received data');
-      notifyListeners();
-    }
-  }
-
-  void _sendConnectionPing(String endpointId) {
-    try {
-      final pingData = {
-        'type': 'ping',
-        'senderId': 'device_${DateTime.now().millisecondsSinceEpoch}',
-        'senderName': 'My Device',
-        'timestamp': DateTime.now().toIso8601String(),
-        'message': 'Connection test ping',
-      };
-      
-      final jsonString = jsonEncode(pingData);
-      final bytes = Uint8List.fromList(utf8.encode(jsonString));
-      
-      Nearby().sendBytesPayload(endpointId, bytes).then((_) {
-        // Success
-      }).catchError((e) {
-        // Ignore errors
-      });
-    } catch (e) {
-      // Ignore errors
-    }
-  }
-
-  void _sendAcknowledgment(String endpointId, int payloadId) {
-    try {
-      final ackData = {
-        'type': 'ack',
-        'senderId': 'device_${DateTime.now().millisecondsSinceEpoch}',
-        'senderName': 'My Device',
-        'timestamp': DateTime.now().toIso8601String(),
-        'payloadId': payloadId,
-      };
-      
-      final jsonString = jsonEncode(ackData);
-      final bytes = Uint8List.fromList(utf8.encode(jsonString));
-      
-      Nearby().sendBytesPayload(endpointId, bytes).catchError((e) {
-        // Ignore
-      });
-    } catch (e) {
-      // Ignore
-    }
-  }
-
-  Future<void> sendReportData(ReportModel report) async {
-    // Ensure advertising and discovery are running
-    if (!_isAdvertising) {
-      await startAdvertising();
-    }
-    if (!_isDiscovering) {
-      await startDiscovery();
-    }
-
-    // Wait a bit for connections to establish
-    if (_connectedDevices.isEmpty) {
-      _updateStatus('🔍 Searching for nearby devices...');
-      await Future.delayed(Duration(seconds: 3));
-    }
-
-    if (_connectedDevices.isEmpty) {
-      _updateStatus('⚠️ No devices found nearby - Report saved locally');
-      throw Exception('No connected devices available');
-    }
-
-    await _verifyAndCleanConnections();
-    
-    if (_connectedDevices.isEmpty) {
-      _updateStatus('❌ No active connections available');
-      throw Exception('No active connections available');
-    }
-
-    final activeDevices = _connectedDevices.toList();
-
-    try {
-      String? imageBase64;
-      if (report.imageFile != null) {
-        try {
-          final imageBytes = await report.imageFile!.readAsBytes();
-          
-          if (imageBytes.length > 200 * 1024) {
-            _updateStatus('⚠️ Image too large, sending without image');
-          } else {
-            imageBase64 = base64Encode(imageBytes);
-            
-            if (imageBase64.length > 250 * 1024) {
-              _updateStatus('⚠️ Encoded image too large, sending without image');
-              imageBase64 = null;
-            }
-          }
-        } catch (e) {
-          _updateStatus('⚠️ Image processing failed, sending without image');
-        }
-      }
-
-      final reportData = report.toJson();
-      if (imageBase64 != null) {
-        reportData['imageBase64'] = imageBase64;
-      }
-
-      final payloadId = DateTime.now().millisecondsSinceEpoch;
-      final payload = {
-        'type': 'report_data',
-        'payloadId': payloadId,
-        'senderId': 'device_$payloadId',
-        'senderName': 'My Device',
-        'timestamp': DateTime.now().toIso8601String(),
-        'report': reportData,
-      };
-
-      final jsonString = jsonEncode(payload);
-      final bytes = Uint8List.fromList(utf8.encode(jsonString));
-
-      int successCount = 0;
-      final List<String> failedDevices = [];
-      final List<Future<void>> sendTasks = [];
-
-      for (final deviceId in activeDevices) {
-        sendTasks.add(_sendToDeviceWithRetry(deviceId, bytes, payloadId).then((_) {
-          successCount++;
-        }).catchError((e) {
-          failedDevices.add(deviceId);
-        }));
-      }
-
-      try {
-        await Future.wait(sendTasks).timeout(Duration(seconds: 30));
-      } catch (e) {
-        // Some sends timed out
-      }
-
-      if (successCount > 0) {
-        _updateStatus('✅ Report sent to $successCount/${activeDevices.length} devices');
-      } else {
-        _updateStatus('❌ Failed to send report to any devices');
-        throw Exception('Send failed to all devices');
-      }
-    } catch (e) {
-      _updateStatus('❌ Send failed');
+      final errorMsg = 'Bluetooth initialization failed: $e';
+      print('✗ $errorMsg');
+      onError?.call(errorMsg);
       rethrow;
     }
   }
 
-  Future<void> _sendToDeviceWithRetry(String deviceId, Uint8List bytes, int payloadId) async {
-    const maxRetries = 3;
-    const retryDelay = Duration(seconds: 1);
-    
-    for (int attempt = 1; attempt <= maxRetries; attempt++) {
+  // Request all necessary permissions
+  Future<void> _requestPermissions() async {
+    if (Platform.isAndroid) {
+      // Android 12+ requires specific Bluetooth permissions
+      final androidInfo = await _getAndroidVersion();
+      
+      if (androidInfo >= 31) { // Android 12+
+        await [
+          Permission.bluetoothScan,
+          Permission.bluetoothConnect,
+          Permission.bluetoothAdvertise,
+        ].request();
+      } else {
+        await [
+          Permission.bluetooth,
+          Permission.location,
+        ].request();
+      }
+    } else if (Platform.isIOS) {
+      await Permission.bluetooth.request();
+    }
+
+    // Verify permissions granted
+    if (Platform.isAndroid) {
+      final bluetoothScan = await Permission.bluetoothScan.status;
+      final bluetoothConnect = await Permission.bluetoothConnect.status;
+      
+      if (!bluetoothScan.isGranted || !bluetoothConnect.isGranted) {
+        throw Exception('Bluetooth permissions not granted');
+      }
+    }
+  }
+
+  Future<int> _getAndroidVersion() async {
+    if (Platform.isAndroid) {
+      // This is a simplified version, use device_info_plus in production
+      return 31; // Assume Android 12+ for safety
+    }
+    return 0;
+  }
+
+  // Handle Bluetooth turned off
+  void _handleBluetoothOff() {
+    print('⚠ Bluetooth turned off');
+    _updateState(BleConnectionState.disconnected);
+    _disconnectAllDevices();
+    stopBroadcasting();
+  }
+
+  // Start scanning for nearby devices
+  Future<void> startScanning() async {
+    if (_isDisposed) return;
+    if (_isScanning) return;
+
+    try {
+      _isScanning = true;
+      _updateState(BleConnectionState.scanning);
+
+      // Cancel any existing scan
+      await _scanSubscription?.cancel();
+      await fbp.FlutterBluePlus.stopScan();
+
+      // Start new scan with service filter
+      await fbp.FlutterBluePlus.startScan(
+        withServices: [fbp.Guid(serviceUuid)],
+        timeout: Duration.zero, // Continuous scan
+        androidUsesFineLocation: true,
+      );
+
+      _scanSubscription = fbp.FlutterBluePlus.scanResults.listen(
+        (results) {
+          if (!_isDisposed && !_scanResultsController.isClosed) {
+            _scanResultsController.add(results);
+            _autoConnectToDevices(results);
+          }
+        },
+        onError: (error) {
+          print('✗ Scan error: $error');
+          onError?.call('Scan error: $error');
+        },
+      );
+
+      print('✓ Scanning started');
+    } catch (e) {
+      _isScanning = false;
+      print('✗ Failed to start scanning: $e');
+      onError?.call('Failed to start scanning: $e');
+    }
+  }
+
+  // Stop scanning
+  Future<void> stopScanning() async {
+    if (!_isScanning) return;
+
+    try {
+      await _scanSubscription?.cancel();
+      _scanSubscription = null;
+      await fbp.FlutterBluePlus.stopScan();
+      _isScanning = false;
+      print('✓ Scanning stopped');
+    } catch (e) {
+      print('✗ Error stopping scan: $e');
+    }
+  }
+
+  // Auto-connect to discovered devices
+  void _autoConnectToDevices(List<fbp.ScanResult> results) {
+    for (var result in results) {
+      final deviceId = result.device.remoteId.toString();
+      
+      if (_connectedDevices.containsKey(deviceId)) continue;
+
+      _connectToDevice(result.device);
+    }
+  }
+
+  // Connect to a device with retry logic
+  Future<void> _connectToDevice(fbp.BluetoothDevice device, {int attempt = 1}) async {
+    if (_isDisposed) return;
+
+    final deviceId = device.remoteId.toString();
+    final deviceName = device.platformName.isNotEmpty ? device.platformName : 'Unknown';
+
+    // Check if already connected
+    if (_connectedDevices.containsKey(deviceId)) {
+      print('ℹ Device $deviceName already connected');
+      return;
+    }
+
+    try {
+      print('→ Connecting to $deviceName (attempt $attempt/$maxRetryAttempts)...');
+
+      // Set connecting state
+      _updateState(BleConnectionState.connecting);
+
+      // Connect with timeout
+      await device.connect(
+        timeout: connectionTimeout,
+        autoConnect: false,
+      ).timeout(
+        connectionTimeout,
+        onTimeout: () {
+          throw TimeoutException('Connection timeout');
+        },
+      );
+
+      // Only update state if connection successful
+      _connectedDevices[deviceId] = device;
+      _updateState(BleConnectionState.connected);
+
+      print('✓ Connected to $deviceName');
+
+      // Monitor connection state
+      final connectionSub = device.connectionState.listen(
+        (state) {
+          if (state == fbp.BluetoothConnectionState.disconnected) {
+            print('⚠ Device $deviceName disconnected');
+            _cleanupDevice(deviceId);
+            
+            // Retry connection after delay
+            if (!_isDisposed) {
+              Future.delayed(retryDelay, () {
+                if (!_isDisposed) _connectToDevice(device);
+              });
+            }
+          }
+        },
+        onError: (error) {
+          print('✗ Connection state error for $deviceName: $error');
+        },
+      );
+      _connectionSubscriptions[deviceId] = connectionSub;
+
+      // Request larger MTU for better throughput
       try {
-        await Nearby().sendBytesPayload(deviceId, bytes);
+        _currentMtu = await device.mtu.first;
+        if (_currentMtu < 512) {
+          _currentMtu = await device.requestMtu(512);
+        }
+        print('✓ MTU set to $_currentMtu for $deviceName');
+      } catch (e) {
+        print('⚠ MTU request failed for $deviceName: $e');
+      }
+
+      // Discover services and subscribe to characteristics
+      await _discoverAndSubscribe(device);
+
+    } on TimeoutException {
+      print('✗ Connection timeout for $deviceName');
+      await _handleConnectionFailure(device, deviceId, attempt);
+    } catch (e) {
+      print('✗ Connection error for $deviceName: $e');
+      await _handleConnectionFailure(device, deviceId, attempt);
+    }
+  }
+
+  // Handle connection failure with retry
+  Future<void> _handleConnectionFailure(
+    fbp.BluetoothDevice device,
+    String deviceId,
+    int attempt,
+  ) async {
+    // Cleanup failed connection
+    _cleanupDevice(deviceId);
+
+    // Retry if under max attempts
+    if (attempt < maxRetryAttempts && !_isDisposed) {
+      await Future.delayed(retryDelay);
+      await _connectToDevice(device, attempt: attempt + 1);
+    } else {
+      print('✗ Max retry attempts reached for ${device.platformName}');
+      _updateState(BleConnectionState.disconnected);
+    }
+  }
+
+  // Discover services and subscribe to characteristics
+  Future<void> _discoverAndSubscribe(fbp.BluetoothDevice device) async {
+    final deviceId = device.remoteId.toString();
+    final deviceName = device.platformName.isNotEmpty ? device.platformName : deviceId;
+
+    try {
+      print('→ Discovering services for $deviceName...');
+
+      final services = await device.discoverServices().timeout(
+        const Duration(seconds: 10),
+        onTimeout: () {
+          throw TimeoutException('Service discovery timeout');
+        },
+      );
+
+      _deviceServices[deviceId] = services;
+
+      bool foundService = false;
+
+      for (var service in services) {
+        if (service.uuid.toString().toLowerCase() == serviceUuid.toLowerCase()) {
+          foundService = true;
+          print('✓ Found target service on $deviceName');
+
+          for (var characteristic in service.characteristics) {
+            if (characteristic.uuid.toString().toLowerCase() == characteristicUuid.toLowerCase()) {
+              
+              // Check if characteristic supports notify
+              if (characteristic.properties.notify) {
+                await _subscribeToCharacteristic(device, characteristic);
+              } else {
+                print('⚠ Characteristic does not support notifications on $deviceName');
+              }
+            }
+          }
+        }
+      }
+
+      if (!foundService) {
+        print('⚠ Target service not found on $deviceName');
+      }
+
+    } on TimeoutException {
+      print('✗ Service discovery timeout for $deviceName');
+      _cleanupDevice(deviceId);
+    } catch (e) {
+      print('✗ Service discovery error for $deviceName: $e');
+      _cleanupDevice(deviceId);
+    }
+  }
+
+  // Subscribe to a characteristic for notifications
+  Future<void> _subscribeToCharacteristic(
+    fbp.BluetoothDevice device,
+    fbp.BluetoothCharacteristic characteristic,
+  ) async {
+    final deviceId = device.remoteId.toString();
+    final deviceName = device.platformName.isNotEmpty ? device.platformName : deviceId;
+
+    try {
+      // Enable notifications
+      await characteristic.setNotifyValue(true);
+
+      // Subscribe to value updates
+      final sub = characteristic.lastValueStream.listen(
+        (value) {
+          if (!_isDisposed) {
+            _handleReceivedData(deviceId, deviceName, value);
+          }
+        },
+        onError: (error) {
+          print('✗ Characteristic error for $deviceName: $error');
+        },
+        cancelOnError: false,
+      );
+
+      // Store subscription
+      _characteristicSubscriptions.putIfAbsent(deviceId, () => []).add(sub);
+
+      print('✓ Subscribed to characteristic on $deviceName');
+    } catch (e) {
+      print('✗ Failed to subscribe to characteristic on $deviceName: $e');
+    }
+  }
+
+  // Handle received data from a device
+  void _handleReceivedData(String deviceId, String deviceName, List<int> data) {
+    if (data.isEmpty) return;
+
+    try {
+      final jsonString = utf8.decode(data);
+      final reportData = jsonDecode(jsonString);
+      final report = ReportModel.fromJson(reportData);
+
+      // Check for duplicates
+      if (_processedReportIds.contains(report.id)) {
+        print('ℹ Duplicate report ${report.id} from $deviceName - ignored');
         return;
-      } catch (e) {
-        if (attempt < maxRetries) {
-          await Future.delayed(retryDelay);
-        } else {
-          rethrow;
-        }
       }
+
+      // Check hop count limit
+      if (report.hopCount >= 5) {
+        print('ℹ Report ${report.id} from $deviceName reached max hops - ignored');
+        return;
+      }
+
+      // Mark as processed
+      _processedReportIds.add(report.id);
+      _cleanupOldReports();
+
+      print('✓ Report ${report.id} received from $deviceName (hop: ${report.hopCount})');
+
+      // Notify callback
+      onReportReceived?.call(report);
+
+      // Re-broadcast with incremented hop count
+      _rebroadcastReport(report);
+
+    } catch (e) {
+      print('✗ Error processing data from $deviceName: $e');
+      onError?.call('Error processing data: $e');
     }
   }
 
-  Future<void> broadcastCustomData(Map<String, dynamic> customData) async {
-    if (_connectedDevices.isEmpty) {
-      _updateStatus('📱 No connected devices to broadcast to');
-      return;
-    }
-
-    await _verifyAndCleanConnections();
-    
-    if (_connectedDevices.isEmpty) {
-      _updateStatus('📱 No active connections to broadcast to');
-      return;
-    }
+  // Re-broadcast received report
+  Future<void> _rebroadcastReport(ReportModel report) async {
+    if (_isDisposed || _isBroadcasting) return;
 
     try {
-      final broadcastData = {
-        'type': 'custom_data',
-        'senderId': 'advertiser_${DateTime.now().millisecondsSinceEpoch}',
-        'senderName': 'Advertiser Device',
-        'timestamp': DateTime.now().toIso8601String(),
-        'data': customData,
-      };
-      
-      final data = jsonEncode(broadcastData);
-      final bytes = Uint8List.fromList(utf8.encode(data));
-      
-      int successCount = 0;
-      for (final deviceId in _connectedDevices) {
-        try {
-          await Nearby().sendBytesPayload(deviceId, bytes);
-          successCount++;
-        } catch (e) {
-          // Ignore individual failures
-        }
-      }
-      
-      _updateStatus('📡 Broadcasted to $successCount/${_connectedDevices.length} devices');
+      final rebroadcastReport = report.copyWith(
+        hopCount: report.hopCount + 1,
+      );
+
+      await broadcastReport(
+        rebroadcastReport,
+        duration: const Duration(seconds: 10),
+      );
+
+      print('✓ Re-broadcasting report ${report.id} (hop: ${rebroadcastReport.hopCount})');
     } catch (e) {
-      _updateStatus('❌ Failed to broadcast');
+      print('✗ Re-broadcast error: $e');
     }
   }
 
-  Future<void> _verifyAndCleanConnections() async {
-    if (_connectedDevices.isEmpty) return;
+  // Broadcast a report to nearby devices
+  Future<void> broadcastReport(
+    ReportModel report, {
+    Duration duration = const Duration(seconds: 10),
+  }) async {
+    if (_isDisposed) return;
 
-    final List<String> staleConnections = [];
+    try {
+      // Stop any existing broadcast
+      await stopBroadcasting();
 
-    for (final deviceId in _connectedDevices.toList()) {
+      _isBroadcasting = true;
+      _updateState(BleConnectionState.broadcasting);
+
+      // Send to all connected devices
+      await _sendReportToConnectedDevices(report);
+
+      // Auto-stop after duration
+      _broadcastTimer = Timer(duration, () {
+        if (!_isDisposed) stopBroadcasting();
+      });
+
+      print('✓ Broadcasting report ${report.id} for ${duration.inSeconds}s');
+    } catch (e) {
+      print('✗ Broadcast error: $e');
+      _isBroadcasting = false;
+      onError?.call('Broadcast error: $e');
+      rethrow;
+    }
+  }
+
+  // Send report to all connected devices
+  Future<void> _sendReportToConnectedDevices(ReportModel report) async {
+    final reportJson = jsonEncode(report.toJson());
+    final reportBytes = utf8.encode(reportJson);
+
+    print('→ Sending report to ${_connectedDevices.length} connected devices (${reportBytes.length} bytes)');
+
+    for (var entry in _connectedDevices.entries) {
       try {
-        final testPayload = {'type': 'connection_verify', 'timestamp': DateTime.now().toIso8601String()};
-        final testData = jsonEncode(testPayload);
-        final bytes = Uint8List.fromList(utf8.encode(testData));
-        
-        await Nearby().sendBytesPayload(deviceId, bytes).timeout(
-          Duration(seconds: 2),
-          onTimeout: () {
-            throw TimeoutException('Connection verification timeout');
-          },
-        );
+        await _sendDataToDevice(entry.value, reportBytes);
       } catch (e) {
-        staleConnections.add(deviceId);
+        print('✗ Failed to send to ${entry.value.platformName}: $e');
+      }
+    }
+  }
+
+  // Send data to a specific device
+  Future<void> _sendDataToDevice(fbp.BluetoothDevice device, List<int> data) async {
+    final deviceId = device.remoteId.toString();
+    final services = _deviceServices[deviceId];
+
+    if (services == null) {
+      throw Exception('No services discovered for device');
+    }
+
+    for (var service in services) {
+      if (service.uuid.toString().toLowerCase() == serviceUuid.toLowerCase()) {
+        for (var characteristic in service.characteristics) {
+          if (characteristic.uuid.toString().toLowerCase() == characteristicUuid.toLowerCase()) {
+            
+            if (characteristic.properties.write || characteristic.properties.writeWithoutResponse) {
+              // Send data in chunks if needed
+              if (data.length > chunkSize) {
+                await _sendDataInChunks(characteristic, data);
+              } else {
+                await characteristic.write(data, withoutResponse: characteristic.properties.writeWithoutResponse);
+              }
+              
+              print('✓ Data sent to ${device.platformName}');
+              return;
+            }
+          }
+        }
       }
     }
 
-    for (final staleDevice in staleConnections) {
-      _connectedDevices.remove(staleDevice);
+    throw Exception('No writable characteristic found');
+  }
+
+  // Send data in chunks for large payloads
+  Future<void> _sendDataInChunks(fbp.BluetoothCharacteristic characteristic, List<int> data) async {
+    final chunks = <List<int>>[];
+    for (var i = 0; i < data.length; i += chunkSize) {
+      final end = (i + chunkSize < data.length) ? i + chunkSize : data.length;
+      chunks.add(data.sublist(i, end));
     }
 
-    if (staleConnections.isNotEmpty) {
-      _updateStatus('🧹 Removed ${staleConnections.length} dead connections');
-      notifyListeners();
-    }
-  }
+    print('→ Sending ${chunks.length} chunks...');
 
-  Future<void> checkConnectionHealth() async {
-    await _verifyAndCleanConnections();
-  }
-
-  void clearReceivedData() {
-    _receivedDataList.clear();
-    notifyListeners();
-  }
-
-  Future<void> stopDiscovery() async {
-    if (!_isDiscovering) return;
-    
-    try {
-      await Nearby().stopDiscovery();
-      _isDiscovering = false;
-      _updateStatus('Stopped device discovery');
-      notifyListeners();
-    } catch (e) {
-      // Ignore
-    }
-  }
-
-  Future<void> stopAdvertising() async {
-    if (!_isAdvertising) return;
-    
-    try {
-      await Nearby().stopAdvertising();
-      _isAdvertising = false;
-      _updateStatus('Stopped advertising');
-      notifyListeners();
-    } catch (e) {
-      // Ignore
-    }
-  }
-
-  Future<void> stopAll() async {
-    try {
-      await Nearby().stopAdvertising();
-      await Nearby().stopDiscovery();
-      await Nearby().stopAllEndpoints();
+    for (var i = 0; i < chunks.length; i++) {
+      await characteristic.write(
+        chunks[i],
+        withoutResponse: characteristic.properties.writeWithoutResponse,
+      );
       
-      _isAdvertising = false;
-      _isDiscovering = false;
-      _connectedDevices.clear();
-      _updateStatus('Stopped all Bluetooth operations');
-      notifyListeners();
+      // Small delay between chunks
+      if (i < chunks.length - 1) {
+        await Future.delayed(const Duration(milliseconds: 50));
+      }
+    }
+
+    print('✓ All chunks sent');
+  }
+
+  // Stop broadcasting
+  Future<void> stopBroadcasting() async {
+    _broadcastTimer?.cancel();
+    _broadcastTimer = null;
+    _isBroadcasting = false;
+
+    if (_connectionState == BleConnectionState.broadcasting) {
+      _updateState(BleConnectionState.connected);
+    }
+
+    print('✓ Broadcasting stopped');
+  }
+
+  // Cleanup a specific device
+  void _cleanupDevice(String deviceId) {
+    try {
+      // Cancel connection subscription
+      _connectionSubscriptions[deviceId]?.cancel();
+      _connectionSubscriptions.remove(deviceId);
+
+      // Cancel all characteristic subscriptions
+      _characteristicSubscriptions[deviceId]?.forEach((sub) => sub.cancel());
+      _characteristicSubscriptions.remove(deviceId);
+
+      // Remove services
+      _deviceServices.remove(deviceId);
+
+      // Disconnect device
+      final device = _connectedDevices.remove(deviceId);
+      device?.disconnect().catchError((e) {
+        print('⚠ Error disconnecting device $deviceId: $e');
+      });
+
+      print('✓ Device $deviceId cleaned up');
     } catch (e) {
-      // Ignore
+      print('✗ Error cleaning up device $deviceId: $e');
     }
   }
 
-  void _updateStatus(String message) {
-    _statusMessage = message;
-    notifyListeners();
-    
-    final duration = message.contains('❌') ? Duration(seconds: 5) : Duration(seconds: 3);
-    Future.delayed(duration, () {
-      if (_statusMessage == message) {
-        _statusMessage = '';
-        notifyListeners();
+  // Disconnect all devices
+  void _disconnectAllDevices() {
+    final deviceIds = _connectedDevices.keys.toList();
+    for (var deviceId in deviceIds) {
+      _cleanupDevice(deviceId);
+    }
+    print('✓ All devices disconnected');
+  }
+
+  // Cleanup old processed reports to prevent memory bloat
+  void _cleanupOldReports() {
+    if (_processedReportIds.length > maxProcessedReports) {
+      final removeCount = _processedReportIds.length - (maxProcessedReports ~/ 2);
+      final toRemove = _processedReportIds.take(removeCount).toList();
+      _processedReportIds.removeAll(toRemove);
+      print('ℹ Cleaned up $removeCount old report IDs');
+    }
+  }
+
+  // Update state and notify listeners
+  void _updateState(BleConnectionState newState) {
+    if (_connectionState != newState) {
+      _connectionState = newState;
+      onStateChanged?.call(newState);
+    }
+  }
+
+  // Check if a report has been processed
+  bool isReportProcessed(String reportId) {
+    return _processedReportIds.contains(reportId);
+  }
+
+  // Get number of connected devices
+  int get connectedDeviceCount => _connectedDevices.length;
+
+  // Check if currently broadcasting
+  bool get isBroadcasting => _isBroadcasting;
+
+  // Dispose and cleanup all resources
+  Future<void> dispose() async {
+    if (_isDisposed) return;
+
+    _isDisposed = true;
+    print('→ Disposing BluetoothService...');
+
+    try {
+      // Stop scanning
+      await stopScanning();
+
+      // Stop broadcasting
+      await stopBroadcasting();
+
+      // Disconnect all devices
+      _disconnectAllDevices();
+
+      // Close stream controller
+      if (!_scanResultsController.isClosed) {
+        await _scanResultsController.close();
       }
-    });
+
+      // Clear caches
+      _processedReportIds.clear();
+      _deviceServices.clear();
+
+      print('✓ BluetoothService disposed successfully');
+    } catch (e) {
+      print('✗ Error during disposal: $e');
+    }
   }
 }

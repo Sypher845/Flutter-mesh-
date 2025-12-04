@@ -14,16 +14,13 @@ dependencies:
   
   # UI & State Management
   cupertino_icons: ^1.0.2
+  flutter_blue_plus: ^1.32.0
   provider: ^6.1.1
   
   # Image & File Handling
-  image_picker: ^1.0.4
+  image_picker: ^1.0.7
   path_provider: ^2.1.1
-  image: ^4.0.17
-  
-  # Network (removed - pure Bluetooth app)
-  # connectivity_plus: ^7.0.0
-  # http: ^1.1.0
+  image: ^4.1.7
   
   # Bluetooth & Nearby Connections
   nearby_connections: ^4.3.0
@@ -34,7 +31,10 @@ dependencies:
   path: ^1.8.3
   
   # Permissions
-  permission_handler: ^12.0.1
+  permission_handler: ^11.3.0
+  
+  # UUID Generation
+  uuid: ^4.3.3
 
 dev_dependencies:
   flutter_test:

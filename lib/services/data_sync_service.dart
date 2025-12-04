@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import '../core/enums/report_enums.dart';
 import '../models/report_model.dart';
 import 'local_storage_service.dart';
 
@@ -6,48 +7,85 @@ class DataSyncService extends ChangeNotifier {
   final LocalStorageService _localStorage = LocalStorageService();
   
   List<ReportModel> _reports = [];
-  List<ReportModel> get reports => _reports;
+  List<ReportModel> get reports => List.unmodifiable(_reports);
   
   String _statusMessage = '';
   String get statusMessage => _statusMessage;
+
+  bool _isLoading = false;
+  bool get isLoading => _isLoading;
 
   DataSyncService() {
     _loadReports();
   }
 
   Future<void> _loadReports() async {
-    _reports = await _localStorage.getPendingReports();
+    if (_isLoading) return;
+    
+    _isLoading = true;
     notifyListeners();
+    
+    try {
+      _reports = await _localStorage.getPendingReports();
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
   }
 
   Future<void> addReport(ReportModel report) async {
     final bluetoothReport = report.copyWith(status: ReportStatus.bluetoothHopping);
     
     _reports.add(bluetoothReport);
-    await _localStorage.saveReport(bluetoothReport);
+    notifyListeners(); // Update UI immediately
     
-    _updateStatus('📱 Report saved locally - ready for Bluetooth hopping');
-    notifyListeners();
+    try {
+      await _localStorage.saveReport(bluetoothReport);
+      _updateStatus('📱 Report saved locally - ready for Bluetooth hopping');
+    } catch (e) {
+      // Rollback on error
+      _reports.removeLast();
+      _updateStatus('❌ Failed to save report');
+      notifyListeners();
+      rethrow;
+    }
   }
 
   Future<void> markReportAsHopped(ReportModel report) async {
     final hoppedReport = report.copyWith(status: ReportStatus.sent);
-    await _localStorage.updateReport(hoppedReport);
-    
     final index = _reports.indexWhere((r) => r.id == report.id);
-    if (index != -1) {
-      _reports[index] = hoppedReport;
-    }
     
-    _updateStatus('📡 Report successfully hopped via Bluetooth');
-    notifyListeners();
+    if (index == -1) return;
+    
+    final oldReport = _reports[index];
+    _reports[index] = hoppedReport;
+    notifyListeners(); // Update UI immediately
+    
+    try {
+      await _localStorage.updateReport(hoppedReport);
+      _updateStatus('📡 Report successfully hopped via Bluetooth');
+    } catch (e) {
+      // Rollback on error
+      _reports[index] = oldReport;
+      _updateStatus('❌ Failed to update report');
+      notifyListeners();
+    }
   }
 
   Future<void> clearAllReports() async {
+    final oldReports = List<ReportModel>.from(_reports);
     _reports.clear();
-    await _localStorage.clearAllReports();
-    _updateStatus('🗑️ All reports cleared');
-    notifyListeners();
+    notifyListeners(); // Update UI immediately
+    
+    try {
+      await _localStorage.clearAllReports();
+      _updateStatus('🗑️ All reports cleared');
+    } catch (e) {
+      // Rollback on error
+      _reports = oldReports;
+      _updateStatus('❌ Failed to clear reports');
+      notifyListeners();
+    }
   }
 
   void _updateStatus(String message) {

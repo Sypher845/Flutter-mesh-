@@ -1,18 +1,49 @@
 import 'dart:io';
+import '../core/enums/report_enums.dart';
 
+/// Model representing a hazard report
+///
+/// Contains all information about a reported hazard including:
+/// - Basic info (title, description)
+/// - Location data (GPS coordinates)
+/// - Image (optional)
+/// - Hazard type classification
+/// - Status tracking
 class ReportModel {
+  /// Unique identifier (UUID v4)
   final String id;
+  
+  /// Short title of the report
   final String title;
+  
+  /// Detailed description of the hazard
   final String description;
+  
+  /// Image file (in-memory, not persisted)
   final File? imageFile;
+  
+  /// Path to saved image file
   final String? imagePath;
+  
+  /// GPS location where hazard was reported
   final LocationData? location;
+  
+  /// Type of hazard (pothole, flooding, etc.)
   final HazardType hazardType;
+  
+  /// When the report was created
   final DateTime createdAt;
+  
+  /// Current status of the report
   final ReportStatus status;
+  
+  /// Number of retry attempts for sending
   final int retryCount;
 
-  ReportModel({
+  /// Number of hops the report has gone through
+  final int hopCount;
+
+  const ReportModel({
     required this.id,
     required this.title,
     required this.description,
@@ -23,8 +54,10 @@ class ReportModel {
     required this.createdAt,
     this.status = ReportStatus.pending,
     this.retryCount = 0,
+    this.hopCount = 0,
   });
 
+  /// Convert report to JSON for storage/transmission
   Map<String, dynamic> toJson() {
     return {
       'id': id,
@@ -36,29 +69,47 @@ class ReportModel {
       'createdAt': createdAt.toIso8601String(),
       'status': status.toString(),
       'retryCount': retryCount,
+      'hopCount': hopCount,
     };
   }
 
+  /// Create report from JSON
   factory ReportModel.fromJson(Map<String, dynamic> json) {
     return ReportModel(
-      id: json['id'],
-      title: json['title'] ?? '',
-      description: json['description'],
-      imagePath: json['imagePath'],
-      location: json['location'] != null ? LocationData.fromJson(json['location']) : null,
-      hazardType: HazardType.values.firstWhere(
-        (e) => e.toString() == json['hazardType'],
-        orElse: () => HazardType.other,
-      ),
-      createdAt: DateTime.parse(json['createdAt']),
-      status: ReportStatus.values.firstWhere(
-        (e) => e.toString() == json['status'],
-        orElse: () => ReportStatus.pending,
-      ),
-      retryCount: json['retryCount'] ?? 0,
+      id: json['id'] as String,
+      title: json['title'] as String? ?? '',
+      description: json['description'] as String,
+      imagePath: json['imagePath'] as String?,
+      location: json['location'] != null 
+          ? LocationData.fromJson(json['location'] as Map<String, dynamic>) 
+          : null,
+      hazardType: _parseHazardType(json['hazardType'] as String?),
+      createdAt: DateTime.parse(json['createdAt'] as String),
+      status: _parseReportStatus(json['status'] as String?),
+      retryCount: json['retryCount'] as int? ?? 0,
+      hopCount: json['hopCount'] as int? ?? 0,
     );
   }
 
+  /// Parse hazard type from string
+  static HazardType _parseHazardType(String? value) {
+    if (value == null) return HazardType.other;
+    return HazardType.values.firstWhere(
+      (e) => e.toString() == value,
+      orElse: () => HazardType.other,
+    );
+  }
+
+  /// Parse report status from string
+  static ReportStatus _parseReportStatus(String? value) {
+    if (value == null) return ReportStatus.pending;
+    return ReportStatus.values.firstWhere(
+      (e) => e.toString() == value,
+      orElse: () => ReportStatus.pending,
+    );
+  }
+
+  /// Create a copy with modified fields
   ReportModel copyWith({
     String? id,
     String? title,
@@ -70,6 +121,7 @@ class ReportModel {
     DateTime? createdAt,
     ReportStatus? status,
     int? retryCount,
+    int? hopCount,
   }) {
     return ReportModel(
       id: id ?? this.id,
@@ -82,23 +134,26 @@ class ReportModel {
       createdAt: createdAt ?? this.createdAt,
       status: status ?? this.status,
       retryCount: retryCount ?? this.retryCount,
+      hopCount: hopCount ?? this.hopCount,
     );
   }
 }
 
+/// Model representing location data
 class LocationData {
   final double latitude;
   final double longitude;
   final double? accuracy;
   final DateTime timestamp;
 
-  LocationData({
+  const LocationData({
     required this.latitude,
     required this.longitude,
     this.accuracy,
     required this.timestamp,
   });
 
+  /// Convert to JSON
   Map<String, dynamic> toJson() {
     return {
       'latitude': latitude,
@@ -108,74 +163,34 @@ class LocationData {
     };
   }
 
+  /// Create from JSON
   factory LocationData.fromJson(Map<String, dynamic> json) {
     return LocationData(
-      latitude: json['latitude'],
-      longitude: json['longitude'],
-      accuracy: json['accuracy'],
-      timestamp: DateTime.parse(json['timestamp']),
+      latitude: (json['latitude'] as num).toDouble(),
+      longitude: (json['longitude'] as num).toDouble(),
+      accuracy: (json['accuracy'] as num?)?.toDouble(),
+      timestamp: DateTime.parse(json['timestamp'] as String),
     );
   }
 
+  /// Get formatted coordinates string
   String get formattedCoordinates {
     return '${latitude.toStringAsFixed(6)}, ${longitude.toStringAsFixed(6)}';
   }
+
+  @override
+  String toString() => formattedCoordinates;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is LocationData &&
+          runtimeType == other.runtimeType &&
+          latitude == other.latitude &&
+          longitude == other.longitude;
+
+  @override
+  int get hashCode => latitude.hashCode ^ longitude.hashCode;
 }
 
-enum HazardType {
-  pothole,
-  brokenLight,
-  flooding,
-  debris,
-  signDamage,
-  roadDamage,
-  other,
-}
 
-extension HazardTypeExtension on HazardType {
-  String get displayName {
-    switch (this) {
-      case HazardType.pothole:
-        return 'Pothole';
-      case HazardType.brokenLight:
-        return 'Broken Street Light';
-      case HazardType.flooding:
-        return 'Flooding';
-      case HazardType.debris:
-        return 'Debris on Road';
-      case HazardType.signDamage:
-        return 'Sign Damage';
-      case HazardType.roadDamage:
-        return 'Road Damage';
-      case HazardType.other:
-        return 'Other';
-    }
-  }
-
-  String get icon {
-    switch (this) {
-      case HazardType.pothole:
-        return '🕳️';
-      case HazardType.brokenLight:
-        return '💡';
-      case HazardType.flooding:
-        return '🌊';
-      case HazardType.debris:
-        return '🚧';
-      case HazardType.signDamage:
-        return '🚸';
-      case HazardType.roadDamage:
-        return '🛣️';
-      case HazardType.other:
-        return '⚠️';
-    }
-  }
-}
-
-enum ReportStatus {
-  pending,
-  syncing,
-  sent,
-  failed,
-  bluetoothHopping,
-}

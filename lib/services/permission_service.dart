@@ -2,20 +2,31 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class PermissionService {
+  // Private constructor
+  PermissionService._();
+
   static const String _permissionsRequestedKey = 'permissions_requested';
+  
+  // Cache for SharedPreferences instance
+  static SharedPreferences? _prefsCache;
+
+  static Future<SharedPreferences> get _prefs async {
+    _prefsCache ??= await SharedPreferences.getInstance();
+    return _prefsCache!;
+  }
 
   static Future<bool> hasRequestedPermissions() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefs;
     return prefs.getBool(_permissionsRequestedKey) ?? false;
   }
 
   static Future<void> markPermissionsRequested() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefs;
     await prefs.setBool(_permissionsRequestedKey, true);
   }
 
   static Future<PermissionStatus> requestAllPermissions() async {
-    final permissions = <Permission>[
+    const permissions = <Permission>[
       Permission.locationWhenInUse,
       Permission.bluetoothConnect,
       Permission.bluetoothScan,
@@ -24,11 +35,12 @@ class PermissionService {
       Permission.photos,
     ];
 
-    Map<Permission, PermissionStatus> statuses = await permissions.request();
+    final statuses = await permissions.request();
     
     // Check if all critical permissions are granted
-    bool allGranted = statuses.values.every((status) => 
-      status == PermissionStatus.granted || status == PermissionStatus.limited);
+    final allGranted = statuses.values.every(
+      (status) => status.isGranted || status.isLimited
+    );
     
     await markPermissionsRequested();
     
@@ -36,27 +48,27 @@ class PermissionService {
   }
 
   static Future<bool> checkBluetoothPermissions() async {
-    final bluetoothConnect = await Permission.bluetoothConnect.status;
-    final bluetoothScan = await Permission.bluetoothScan.status;
-    final bluetoothAdvertise = await Permission.bluetoothAdvertise.status;
+    final results = await Future.wait([
+      Permission.bluetoothConnect.status,
+      Permission.bluetoothScan.status,
+      Permission.bluetoothAdvertise.status,
+    ]);
     
-    return bluetoothConnect.isGranted && 
-           bluetoothScan.isGranted && 
-           bluetoothAdvertise.isGranted;
+    return results.every((status) => status.isGranted);
   }
 
   static Future<bool> checkLocationPermissions() async {
-    final location = await Permission.locationWhenInUse.status;
-    return location.isGranted || location.isLimited;
+    final status = await Permission.locationWhenInUse.status;
+    return status.isGranted || status.isLimited;
   }
 
   static Future<bool> checkCameraPermissions() async {
-    final camera = await Permission.camera.status;
-    return camera.isGranted;
+    final status = await Permission.camera.status;
+    return status.isGranted;
   }
 
   static Future<bool> checkPhotosPermissions() async {
-    final photos = await Permission.photos.status;
-    return photos.isGranted || photos.isLimited;
+    final status = await Permission.photos.status;
+    return status.isGranted || status.isLimited;
   }
 }

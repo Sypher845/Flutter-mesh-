@@ -1,11 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'providers/report_provider.dart';
 import 'screens/home_screen.dart';
-import 'services/data_sync_service.dart';
-import 'services/bluetooth_service.dart';
 
 void main() {
-  runApp(MyApp());
+  runApp(const MyApp());
 }
 
 class MyApp extends StatelessWidget {
@@ -13,18 +12,16 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MultiProvider(
-      providers: [
-        ChangeNotifierProvider(create: (_) => DataSyncService()),
-        ChangeNotifierProvider(create: (_) => BluetoothService()),
-      ],
+    return ChangeNotifierProvider(
+      create: (_) => ReportProvider(),
       child: MaterialApp(
-        title: 'Hazard Reporter',
+        title: 'BLE Report Mesh',
+        debugShowCheckedModeBanner: false,
         theme: ThemeData(
-          primarySwatch: Colors.orange,
+          primarySwatch: Colors.blue,
           useMaterial3: true,
         ),
-        home: HomeScreen(),
+        home: const HomeScreen(),
       ),
     );
   }

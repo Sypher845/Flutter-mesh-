@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'dart:convert';
-import '../services/bluetooth_service.dart';
+import '../services/bluetooth/models/received_data.dart';
 
 class ReceivedDataItem extends StatelessWidget {
   final ReceivedData receivedData;
@@ -290,7 +290,7 @@ class ReceivedDataItem extends StatelessWidget {
             Icon(Icons.tag, size: 12, color: Colors.grey[600]),
             SizedBox(width: 4),
             Text(
-              'ID: ${reportId.length > 10 ? reportId.substring(0, 10) + '...' : reportId}',
+              'ID: ${reportId.length > 10 ? '${reportId.substring(0, 10)}...' : reportId}',
               style: TextStyle(fontSize: 11, color: Colors.grey[600]),
             ),
             if (createdAt != null) ...[
@@ -369,7 +369,7 @@ class ReceivedDataItem extends StatelessWidget {
           if (data.isNotEmpty) ...[
             SizedBox(height: 4),
             Text(
-              'Content: ${data.toString().length > 100 ? data.toString().substring(0, 100) + '...' : data.toString()}',
+              'Content: ${data.toString().length > 100 ? '${data.toString().substring(0, 100)}...' : data.toString()}',
               style: TextStyle(fontSize: 11, color: Colors.grey[600]),
             ),
           ],

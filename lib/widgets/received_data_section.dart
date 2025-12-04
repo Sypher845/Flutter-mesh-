@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import '../services/bluetooth_service.dart';
+import '../services/bluetooth/bluetooth_service.dart';
 import 'received_data_item.dart';
 
 class ReceivedDataSection extends StatelessWidget {

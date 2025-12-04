@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/data_sync_service.dart';
-import '../services/bluetooth_service.dart';
+import '../services/bluetooth/bluetooth_service.dart';
 
 class StatusMessages extends StatelessWidget {
   const StatusMessages({super.key});

@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import '../models/report_model.dart';
+import '../core/enums/report_enums.dart';
 import '../services/data_sync_service.dart';
 
 class ReportsList extends StatelessWidget {

@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import '../models/report_model.dart';
+import '../core/enums/report_enums.dart';
 
 class HazardTypeSelector extends StatelessWidget {
   final HazardType selectedType;
@@ -22,7 +22,7 @@ class HazardTypeSelector extends StatelessWidget {
             Text('Hazard Type', style: Theme.of(context).textTheme.titleMedium),
             SizedBox(height: 10),
             DropdownButtonFormField<HazardType>(
-              value: selectedType,
+              initialValue: selectedType,
               decoration: InputDecoration(
                 border: OutlineInputBorder(),
                 contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),

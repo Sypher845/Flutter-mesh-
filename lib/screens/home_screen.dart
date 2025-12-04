@@ -1,22 +1,11 @@
+import 'dart:convert';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:image_picker/image_picker.dart';
-import 'dart:io';
-
+import '../services/bluetooth/bluetooth_service.dart';
+import '../providers/report_provider.dart';
 import '../models/report_model.dart';
-import '../services/data_sync_service.dart';
-import '../services/bluetooth_service.dart';
-import '../utils/image_helper.dart';
-import '../widgets/image_section.dart';
-import '../widgets/title_section.dart';
-import '../widgets/description_section.dart';
-import '../widgets/hazard_type_selector.dart';
-import '../widgets/location_section.dart';
-import '../widgets/status_messages.dart';
-import '../widgets/emulator_warning.dart';
-import '../widgets/received_data_section.dart';
-import '../widgets/tickets_list.dart';
-import '../widgets/permission_dialog.dart';
+import 'create_report_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -26,263 +15,345 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  final TextEditingController _titleController = TextEditingController();
-  final TextEditingController _descriptionController = TextEditingController();
-  final ImagePicker _picker = ImagePicker();
-  
-  File? _selectedImage;
-  HazardType _selectedHazardType = HazardType.other;
-  LocationData? _location;
-  bool _isLoadingLocation = false;
+  final BluetoothService _bluetoothService = BluetoothService();
+  bool _isInitializing = true;
+  String? _errorMessage;
 
   @override
   void initState() {
     super.initState();
-    _titleController.addListener(() => setState(() {}));
-    _descriptionController.addListener(() => setState(() {}));
-    _checkAndRequestPermissions();
+    _initializeBluetooth();
   }
 
-  Future<void> _checkAndRequestPermissions() async {
-    await Future.delayed(Duration(milliseconds: 500));
-    
-    if (mounted) {
-      await PermissionDialog.showIfNeeded(context);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text('Hazard Reporter'),
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-      ),
-      body: SingleChildScrollView(
-        padding: EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            ImageSection(
-              selectedImage: _selectedImage,
-              onPickImage: _pickImage,
-            ),
-            SizedBox(height: 16),
-            LocationSection(
-              location: _location,
-              onGetLocation: _getLocation,
-              isLoading: _isLoadingLocation,
-            ),
-            SizedBox(height: 16),
-            HazardTypeSelector(
-              selectedType: _selectedHazardType,
-              onChanged: (type) => setState(() => _selectedHazardType = type),
-            ),
-            SizedBox(height: 16),
-            TitleSection(controller: _titleController),
-            SizedBox(height: 16),
-            DescriptionSection(controller: _descriptionController),
-            SizedBox(height: 20),
-            _buildSubmitButton(),
-            SizedBox(height: 20),
-            StatusMessages(),
-            SizedBox(height: 20),
-            EmulatorWarning(),
-            SizedBox(height: 20),
-            ReceivedDataSection(),
-            SizedBox(height: 20),
-            ReportsList(),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildSubmitButton() {
-    return Consumer2<DataSyncService, BluetoothService>(
-      builder: (context, dataSync, bluetooth, child) {
-        final canSubmit = _canSubmit();
-
-        return ElevatedButton(
-          onPressed: canSubmit ? _submitReport : null,
-          style: ElevatedButton.styleFrom(
-            padding: EdgeInsets.symmetric(vertical: 16),
-            backgroundColor: canSubmit ? Theme.of(context).primaryColor : Colors.grey,
-            foregroundColor: Colors.white,
-          ),
-          child: Text(
-            'Submit Report via Bluetooth',
-            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-          ),
-        );
-      },
-    );
-  }
-
-  Future<void> _pickImage(ImageSource source) async {
+  Future<void> _initializeBluetooth() async {
     try {
-      final XFile? image = await _picker.pickImage(
-        source: source,
-        maxWidth: 1024,
-        maxHeight: 1024,
-        imageQuality: 85,
-      );
-      
-      if (image != null) {
-        final originalFile = File(image.path);
-        final compressedFile = await ImageHelper.compressImage(originalFile);
-        
-        if (compressedFile != null) {
-          final compressedSize = await compressedFile.length();
-          
-          setState(() {
-            _selectedImage = compressedFile;
-          });
-          
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text('Image compressed: ${(compressedSize / 1024).toStringAsFixed(1)} KB'),
-                backgroundColor: Colors.green,
-                duration: Duration(seconds: 2),
-              ),
-            );
-          }
-        } else {
-          setState(() {
-            _selectedImage = originalFile;
-          });
-        }
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error picking image: $e')),
-        );
-      }
-    }
-  }
-
-  Future<void> _getLocation() async {
-    setState(() => _isLoadingLocation = true);
-    
-    try {
-      // TODO: Implement actual location fetching with geolocator package
-      // For now, using mock data
-      await Future.delayed(Duration(seconds: 1));
-      
       setState(() {
-        _location = LocationData(
-          latitude: 37.7749,
-          longitude: -122.4194,
-          accuracy: 10.0,
-          timestamp: DateTime.now(),
-        );
-        _isLoadingLocation = false;
+        _isInitializing = true;
+        _errorMessage = null;
       });
+
+      // Set up callbacks before any operations
+      _setupBluetoothCallbacks();
+
+      // The bluetooth service auto-initializes in receiver mode
+      // Just wait a moment for it to be ready
+      await Future.delayed(Duration(milliseconds: 500));
+
+      setState(() => _isInitializing = false);
       
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Location captured successfully'),
+          const SnackBar(
+            content: Text('✓ Bluetooth initialized - Ready to receive reports'),
             backgroundColor: Colors.green,
             duration: Duration(seconds: 2),
           ),
         );
       }
     } catch (e) {
-      setState(() => _isLoadingLocation = false);
+      setState(() {
+        _isInitializing = false;
+        _errorMessage = e.toString();
+      });
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error getting location: $e')),
+          SnackBar(
+            content: Text('✗ Bluetooth error: $e'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 4),
+          ),
         );
       }
     }
   }
 
-  bool _canSubmit() {
-    return _titleController.text.trim().isNotEmpty &&
-           _descriptionController.text.trim().isNotEmpty;
-  }
-
-  Future<void> _submitReport() async {
-    final title = _titleController.text.trim();
-    final description = _descriptionController.text.trim();
-    
-    if (title.isEmpty || description.isEmpty) {
-      _showMessage('❌ Please fill in all required fields', Colors.red);
-      return;
-    }
-
-    final report = ReportModel(
-      id: DateTime.now().millisecondsSinceEpoch.toString(),
-      title: title,
-      description: description,
-      imageFile: _selectedImage,
-      imagePath: _selectedImage?.path,
-      location: _location,
-      hazardType: _selectedHazardType,
-      createdAt: DateTime.now(),
-    );
-
-    final dataSync = Provider.of<DataSyncService>(context, listen: false);
-    final bluetooth = Provider.of<BluetoothService>(context, listen: false);
-
-    try {
-      await dataSync.addReport(report);
-    } catch (e) {
-      _showMessage('❌ Failed to save report', Colors.red);
-      return;
-    }
-
-    // Automatically start advertising and discovery
-    _showMessage('📡 Broadcasting report to nearby devices...', Colors.blue);
-    
-    try {
-      // Ensure Bluetooth is active and send report
-      await bluetooth.sendReportData(report);
+  void _setupBluetoothCallbacks() {
+    // Listen to status messages
+    _bluetoothService.addListener(() {
+      if (!mounted) return;
       
-      final sentCount = bluetooth.connectedDevices.length;
-      if (sentCount > 0) {
-        _showMessage('✅ Report sent to $sentCount device(s)!', Colors.green);
-      } else {
-        _showMessage('📝 Report saved locally - No nearby devices found', Colors.orange);
+      final status = _bluetoothService.statusMessage;
+      if (status.isNotEmpty) {
+        // Status messages are already shown by the service
+        // We can add additional UI updates here if needed
       }
-      
-    } catch (e) {
-      // Report is already saved locally, just inform user
-      _showMessage('📝 Report saved locally - Will sync when devices are nearby', Colors.orange);
-    }
+    });
 
-    _clearForm();
+    // Listen for received data to extract reports
+    _bluetoothService.addListener(() {
+      if (!mounted) return;
+      
+      // Check for new reports in received data
+      for (final receivedData in _bluetoothService.receivedDataList) {
+        final data = receivedData.data;
+        final dataType = data['type'] as String?;
+        
+        if (dataType == 'report_data' || dataType == 'ticket_data') {
+          final reportJson = data['report'] as Map<String, dynamic>? ?? 
+                            data['ticket'] as Map<String, dynamic>?;
+          
+          if (reportJson != null) {
+            try {
+              // Extract image if present
+              final imageBase64 = reportJson['imageBase64'] as String?;
+              
+              final report = ReportModel.fromJson(reportJson);
+              _handleReportReceived(report, imageBase64);
+            } catch (e) {
+              // Ignore parsing errors
+            }
+          }
+        }
+      }
+    });
   }
 
-  void _showMessage(String message, Color color) {
-    if (mounted) {
+  // Store received images separately (since ReportModel doesn't store base64)
+  final Map<String, Uint8List> _reportImages = {};
+
+  void _handleReportReceived(ReportModel report, String? imageBase64) {
+    if (!mounted) return;
+
+    final provider = Provider.of<ReportProvider>(context, listen: false);
+    final added = provider.addReport(report);
+
+    // Store image if present
+    if (imageBase64 != null && imageBase64.isNotEmpty) {
+      try {
+        _reportImages[report.id] = base64Decode(imageBase64);
+      } catch (e) {
+        // Ignore image decode errors
+      }
+    }
+
+    if (added) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(message),
-          backgroundColor: color,
-          duration: Duration(seconds: 3),
+          content: Text('📥 Report received: ${report.title}\n(Hop: ${report.hopCount})${imageBase64 != null ? " 📷" : ""}'),
+          backgroundColor: Colors.blue,
+          duration: const Duration(seconds: 3),
         ),
       );
     }
   }
 
-  void _clearForm() {
-    _titleController.clear();
-    _descriptionController.clear();
-    setState(() {
-      _selectedImage = null;
-      _location = null;
-      _selectedHazardType = HazardType.other;
-    });
+
+
+  Color _getHopColor(int hopCount) {
+    // Color gradient based on hop count
+    if (hopCount == 0) return Colors.green;
+    if (hopCount == 1) return Colors.blue;
+    if (hopCount == 2) return Colors.orange;
+    if (hopCount >= 3) return Colors.red;
+    return Colors.grey;
   }
 
   @override
   void dispose() {
-    _titleController.dispose();
-    _descriptionController.dispose();
+    _bluetoothService.dispose();
     super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isInitializing) {
+      return Scaffold(
+        body: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: const [
+              CircularProgressIndicator(),
+              SizedBox(height: 16),
+              Text('Initializing Bluetooth...'),
+            ],
+          ),
+        ),
+      );
+    }
+
+    if (_errorMessage != null) {
+      return Scaffold(
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.error_outline, size: 64, color: Colors.red),
+                const SizedBox(height: 16),
+                Text(
+                  'Bluetooth Error',
+                  style: Theme.of(context).textTheme.headlineSmall,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  _errorMessage!,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: Colors.red),
+                ),
+                const SizedBox(height: 24),
+                ElevatedButton(
+                  onPressed: _initializeBluetooth,
+                  child: const Text('Retry'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('BLE Report Mesh'),
+        actions: [
+          // Show connection status
+          Center(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8.0),
+              child: Row(
+                children: [
+                  Icon(
+                    _bluetoothService.connectedDevices.isEmpty 
+                        ? Icons.bluetooth_searching 
+                        : Icons.bluetooth_connected,
+                    size: 20,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    '${_bluetoothService.connectedDevices.length}',
+                    style: const TextStyle(fontSize: 14),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: _initializeBluetooth,
+            tooltip: 'Restart Bluetooth',
+          ),
+        ],
+      ),
+      body: Consumer<ReportProvider>(
+        builder: (context, provider, child) {
+          if (provider.reports.isEmpty) {
+            return const Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.inbox, size: 64, color: Colors.grey),
+                  SizedBox(height: 16),
+                  Text('No reports yet'),
+                  SizedBox(height: 8),
+                  Text(
+                    'Create a report or wait to receive one',
+                    style: TextStyle(color: Colors.grey),
+                  ),
+                ],
+              ),
+            );
+          }
+
+          return ListView.builder(
+            itemCount: provider.reports.length,
+            itemBuilder: (context, index) {
+              final report = provider.reports[index];
+              final imageBytes = _reportImages[report.id] ?? 
+                                report.imageFile?.readAsBytesSync();
+              
+              return Card(
+                margin: const EdgeInsets.all(8),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Image if available
+                    if (imageBytes != null)
+                      ClipRRect(
+                        borderRadius: const BorderRadius.vertical(top: Radius.circular(4)),
+                        child: Image.memory(
+                          imageBytes,
+                          width: double.infinity,
+                          height: 200,
+                          fit: BoxFit.cover,
+                          errorBuilder: (context, error, stackTrace) {
+                            return Container(
+                              height: 200,
+                              color: Colors.grey[300],
+                              child: const Center(
+                                child: Icon(Icons.broken_image, size: 48, color: Colors.grey),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    
+                    // Report details
+                    ListTile(
+                      title: Row(
+                        children: [
+                          Expanded(child: Text(report.title, style: const TextStyle(fontWeight: FontWeight.bold))),
+                          // Hop count badge
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: _getHopColor(report.hopCount),
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Text(
+                              'Hop: ${report.hopCount}',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      subtitle: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const SizedBox(height: 4),
+                          Text(report.description),
+                          const SizedBox(height: 4),
+                          Row(
+                            children: [
+                              Icon(Icons.location_on, size: 14, color: Colors.grey[600]),
+                              const SizedBox(width: 4),
+                              Expanded(
+                                child: Text(
+                                  report.location?.formattedCoordinates ?? "No location",
+                                  style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                                ),
+                              ),
+                              Text(
+                                '${report.createdAt.hour}:${report.createdAt.minute.toString().padLeft(2, '0')}',
+                                style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                      isThreeLine: true,
+                    ),
+                  ],
+                ),
+              );
+            },
+          );
+        },
+      ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => const CreateReportScreen()),
+          );
+        },
+        child: const Icon(Icons.add),
+      ),
+    );
   }
 }
