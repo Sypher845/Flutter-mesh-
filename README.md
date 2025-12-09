@@ -38,10 +38,14 @@ BLE Report Mesh enables users to create, share, and receive hazard reports (poth
 ### 🔗 Connectivity
 - **Nearby Connections**: Uses Google's Nearby Connections API (WiFi Direct + Bluetooth)
 - **Automatic Advertising**: Device is always visible to others
-- **Automatic Discovery**: Continuously scans for nearby devices
+- **Automatic Discovery**: Continuously scans for nearby devices with adaptive frequency
 - **Connection Status**: Shows number of connected devices in app bar
-- **Range**: ~30-100 meters depending on environment
+- **Range**: ~30-100 meters depending on environment (optimized for maximum range)
 - **No Internet Required**: Works completely offline
+- **Auto-Reconnection**: Automatically reconnects to lost devices (up to 5 attempts)
+- **Connection Limit**: Manages up to 8 simultaneous connections for optimal performance
+- **Health Monitoring**: Periodic health checks detect and remove stale connections
+- **Adaptive Strategy**: Dynamically adjusts connection timeouts based on success rates
 
 ## Architecture
 
@@ -69,13 +73,18 @@ lib/
 ├── services/
 │   └── bluetooth/
 │       ├── bluetooth_service.dart     # Main Bluetooth orchestrator
-│       ├── connection_manager.dart    # Connection handling
+│       ├── connection_manager.dart    # Connection handling (enhanced)
+│       ├── reconnection_manager.dart  # Auto-reconnection (NEW)
+│       ├── connection_metrics.dart    # Connection statistics (NEW)
 │       ├── payload_handler.dart       # Data encoding/decoding
 │       ├── mesh_network_manager.dart  # Mesh rebroadcasting
 │       ├── permission_manager.dart    # Permission handling
 │       └── models/
 │           ├── bluetooth_constants.dart  # Configuration constants
-│           └── received_data.dart        # Received data model
+│           ├── received_data.dart        # Received data model
+│           ├── reconnection_entry.dart   # Reconnection queue (NEW)
+│           ├── connection_attempt.dart   # Connection tracking (NEW)
+│           └── connection_event.dart     # Event logging (NEW)
 ├── widgets/
 │   └── status_messages.dart           # UI components
 └── main.dart                          # App entry point
@@ -89,7 +98,9 @@ lib/
 - Prevents connection conflicts and state inconsistencies
 
 **Manager Pattern**:
-- `ConnectionManager`: Handles advertising, discovery, and connections
+- `ConnectionManager`: Handles advertising, discovery, and connections (enhanced with adaptive frequency and connection limits)
+- `ReconnectionManager`: Handles automatic reconnection with exponential backoff (NEW)
+- `ConnectionMetrics`: Tracks connection statistics and adaptive timeouts (NEW)
 - `PayloadHandler`: Handles data encoding, decoding, and transmission
 - `MeshNetworkManager`: Handles rebroadcasting and hop count management
 - `PermissionManager`: Handles Android permissions
@@ -99,6 +110,52 @@ lib/
 - Notifies UI of changes
 - Handles report deduplication
 
+## Enhanced Features (v2.0.0)
+
+### 🔄 Auto-Reconnection System
+- **Queue-Based Management**: Disconnected devices automatically added to reconnection queue
+- **Exponential Backoff**: 5-second intervals between reconnection attempts
+- **Retry Limit**: Maximum 5 attempts per device before giving up
+- **Automatic Cleanup**: Exhausted attempts automatically removed from queue
+
+### 📊 Connection Metrics & Adaptive Strategy
+- **Success Rate Tracking**: Monitors last 10 connection attempts
+- **Dynamic Timeout Adjustment**:
+  - Success rate < 50% → Increase timeout to 10 seconds
+  - Success rate > 80% → Decrease timeout to 5 seconds
+- **Event Logging**: Detailed logs of all connection events with timestamps
+- **Statistics API**: Access real-time connection statistics
+
+### ⚡ Enhanced Health Monitoring
+- **Fast Stale Detection**: 2-second timeout for detecting unresponsive connections
+- **Periodic Health Checks**: Automatic verification every 30 seconds
+- **Automatic Cleanup**: Stale connections automatically disconnected and queued for reconnection
+- **Health Statistics**: Track active vs stale connection counts
+
+### 🎯 Connection Quality Management
+- **Connection Limit**: Maximum 8 simultaneous connections for optimal performance
+- **Parallel Processing**: Multiple connection requests processed simultaneously
+- **Signal Strength Logging**: Track connection quality (when available)
+- **Quality Events**: Detailed event tracking for debugging
+
+### 🔍 Adaptive Discovery
+- **High Frequency Mode**: 5-second scans when no connections (find devices faster)
+- **Normal Frequency Mode**: 30-second scans when connected (save battery)
+- **Discovery Restart**: Automatic restart if few devices found
+- **Connection Preservation**: Discovery restart maintains existing connections
+
+### 🔧 Lifecycle & Error Management
+- **Background/Foreground Handling**: Preserve connections during app state changes
+- **Bluetooth State Monitoring**: Automatic pause/resume on Bluetooth disable/enable
+- **Graceful Error Handling**: Handle API errors (ALREADY_ADVERTISING, ALREADY_DISCOVERING)
+- **Automatic Recovery**: Retry with exponential backoff, full reset on consecutive errors
+
+### 📈 Range Optimization
+- **P2P_CLUSTER Strategy**: Optimized for maximum range over throughput
+- **Extended Timeouts**: Longer timeouts allow weaker signals to complete
+- **Retry Logic**: Multiple attempts increase success at range limits
+- **Connection Maintenance**: Keep connections alive to prevent re-establishment overhead
+
 ## How It Works
 
 ### 1. Device Initialization
@@ -107,9 +164,20 @@ App Starts
     ↓
 BluetoothService initializes (Singleton)
     ↓
+Initialize Managers:
+  - ConnectionManager
+  - ReconnectionManager (NEW)
+  - ConnectionMetrics (NEW)
+  - PayloadHandler
+  - MeshNetworkManager
+    ↓
 Start Advertising (visible to others)
     ↓
-Start Discovery (find nearby devices)
+Start Discovery (adaptive frequency)
+    ↓
+Start Health Check Timer (every 30s)
+    ↓
+Start Reconnection Loop (every 2s)
     ↓
 Ready to send/receive reports
 ```
@@ -189,6 +257,7 @@ Located in `lib/services/bluetooth/models/bluetooth_constants.dart`:
 // Connection
 static const String serviceId = 'com.example.ble_report_mesh';
 static const String deviceName = 'BLE_Mesh_Device';
+static const int maxConnections = 8; // NEW: Connection limit
 
 // Sending
 static const int maxSendAttempts = 3;
@@ -206,6 +275,23 @@ static const int maxTrackedUUIDs = 1000;
 // Timeouts
 static const int rebroadcastDelay = 500; // 0.5 seconds
 static const int rebroadcastTimeout = 8000; // 8 seconds
+static const int healthCheckIntervalSeconds = 30; // NEW: Health check frequency
+static const int healthCheckTimeoutSeconds = 2; // NEW: Stale detection timeout
+
+// Reconnection (NEW)
+static const int reconnectionMaxRetries = 5; // Max reconnection attempts
+static const int reconnectionIntervalSeconds = 5; // Time between retries
+
+// Adaptive Strategy (NEW)
+static const int metricsWindowSize = 10; // Success rate window
+static const double lowSuccessThreshold = 0.5; // Increase timeout threshold
+static const double highSuccessThreshold = 0.8; // Decrease timeout threshold
+static const int adaptiveTimeoutMin = 5000; // Minimum timeout (ms)
+static const int adaptiveTimeoutMax = 10000; // Maximum timeout (ms)
+
+// Discovery (NEW)
+static const int discoveryHighFrequencySeconds = 5; // When no connections
+static const int discoveryNormalFrequencySeconds = 30; // When connected
 ```
 
 ## Installation
@@ -312,17 +398,47 @@ adb logcat | grep -E "📤|📥|🔄|✅|❌"
 - Check permissions are granted
 - Restart app on all devices
 - Ensure devices are within 100m of each other
+- **NEW**: Check connection limit (max 8 devices)
+- **NEW**: Review connection statistics for success rate
 
 ### Report Not Sending
 - Check connection count in app bar (should be > 0)
 - Check logs for error messages
 - Verify image size is < 300KB
 - Try restarting Bluetooth
+- **NEW**: Check if health check marked connections as stale
 
 ### Report Not Appearing
 - Check if duplicate (same UUID)
 - Check logs for "Skipping duplicate" messages
 - Verify receiving device is connected
+
+### Frequent Disconnections (NEW)
+- Check connection success rate in statistics (should be > 50%)
+- Review signal strength in logs
+- Verify devices aren't moving out of range
+- Consider increasing health check timeout if environment is challenging
+
+### Reconnection Not Working (NEW)
+- Check reconnection queue size in statistics
+- Verify retry count hasn't been exhausted (max 5 attempts)
+- Ensure devices are still advertising
+- Check logs for reconnection attempt messages
+
+### Poor Performance (NEW)
+- Review discovery frequency (should be adaptive)
+- Check number of active connections
+- Consider reducing connection limit
+- Review metrics for patterns
+
+### Getting Connection Statistics (NEW)
+```dart
+final bluetooth = Provider.of<BluetoothService>(context, listen: false);
+final stats = bluetooth.getConnectionStatistics();
+print('Success Rate: ${stats['successRate']}%');
+print('Current Timeout: ${stats['currentTimeout']}ms');
+print('Reconnection Queue: ${stats['reconnectionQueueSize']}');
+```
 
 ## Known Limitations
 
@@ -341,6 +457,7 @@ adb logcat | grep -E "📤|📥|🔄|✅|❌"
 - [ ] Image persistence to local storage
 - [ ] Offline send queue for failed transmissions
 - [ ] Report status indicators (sending, sent, failed)
+- [ ] Connection quality UI indicators
 
 ### Medium Term
 - [ ] Multiple images per report
@@ -348,6 +465,8 @@ adb logcat | grep -E "📤|📥|🔄|✅|❌"
 - [ ] Image editing (crop, rotate)
 - [ ] Map view with report locations
 - [ ] Address lookup (reverse geocoding)
+- [ ] Signal strength-based connection prioritization
+- [ ] Predictive reconnection (before complete signal loss)
 
 ### Long Term
 - [ ] iOS support
@@ -356,6 +475,8 @@ adb logcat | grep -E "📤|📥|🔄|✅|❌"
 - [ ] Analytics dashboard
 - [ ] Cloud sync (optional)
 - [ ] User accounts
+- [ ] Mesh topology optimization
+- [ ] Intelligent connection pruning (replace weak with strong)
 
 ## Performance
 
@@ -401,7 +522,20 @@ For issues, questions, or suggestions:
 
 ## Version History
 
-### v1.0.3 (Current)
+### v2.0.0 (Current) - Bluetooth Enhancement
+- ✅ **Auto-Reconnection System**: Automatic reconnection with exponential backoff (max 5 attempts)
+- ✅ **Connection Metrics**: Track connection statistics and success rates
+- ✅ **Adaptive Strategy**: Dynamic timeout adjustment based on success rates (5s-10s)
+- ✅ **Enhanced Health Monitoring**: Faster stale detection (2s timeout) with periodic checks (30s)
+- ✅ **Connection Limit**: Enforce maximum 8 simultaneous connections
+- ✅ **Adaptive Discovery**: High frequency (5s) when no connections, normal (30s) when connected
+- ✅ **Lifecycle Management**: Handle background/foreground transitions and Bluetooth state changes
+- ✅ **Error Recovery**: Graceful handling of API errors with automatic retry and full reset
+- ✅ **Range Optimization**: Optimized for maximum range (up to 100m clear line of sight)
+- ✅ **Comprehensive Testing**: Property-based tests for all correctness properties
+- ✅ **Enhanced Documentation**: Updated ARCHITECTURE.md and README.md with new features
+
+### v1.0.3
 - ✅ Fixed broadcast to multiple devices
 - ✅ Fixed mesh rebroadcasting
 - ✅ Added device ID tracking

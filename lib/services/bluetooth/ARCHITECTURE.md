@@ -11,35 +11,79 @@
 │  • Manages state & notifications                            │
 │  • Provides public API                                      │
 │  • Handles high-level logic                                 │
+│  • Lifecycle management (background/foreground)             │
+│  • Bluetooth state monitoring                               │
 └─────────────────────────────────────────────────────────────┘
                             │
                             │ manages
                             ▼
-        ┌───────────────────┴───────────────────┐
-        │                   │                   │
-        ▼                   ▼                   ▼
-┌──────────────┐   ┌──────────────┐   ┌──────────────┐
-│ Connection   │   │   Payload    │   │ MeshNetwork  │
-│   Manager    │   │   Handler    │   │   Manager    │
-├──────────────┤   ├──────────────┤   ├──────────────┤
-│• Advertising │   │• Send bytes  │   │• UUID track  │
-│• Discovery   │   │• Decode data │   │• Hop count   │
-│• Connections │   │• Validation  │   │• Rebroadcast │
-│• Endpoints   │   │• Retry logic │   │• Cleanup     │
-└──────────────┘   └──────────────┘   └──────────────┘
-        │                   │                   │
-        │                   │                   │
-        ▼                   ▼                   ▼
-┌──────────────┐   ┌──────────────┐   ┌──────────────┐
-│ Permission   │   │  Bluetooth   │   │  Received    │
-│   Manager    │   │  Constants   │   │    Data      │
-├──────────────┤   ├──────────────┤   ├──────────────┤
-│• BT perms    │   │• Service ID  │   │• Sender info │
-│• Location    │   │• Timeouts    │   │• Payload     │
-│• WiFi nearby │   │• Limits      │   │• Timestamp   │
-└──────────────┘   │• Types       │   └──────────────┘
+        ┌───────────────────┴───────────────────┬──────────────┐
+        │                   │                   │              │
+        ▼                   ▼                   ▼              ▼
+┌──────────────┐   ┌──────────────┐   ┌──────────────┐   ┌──────────────┐
+│ Connection   │   │   Payload    │   │ MeshNetwork  │   │ Reconnection │
+│   Manager    │   │   Handler    │   │   Manager    │   │   Manager    │
+├──────────────┤   ├──────────────┤   ├──────────────┤   ├──────────────┤
+│• Advertising │   │• Send bytes  │   │• UUID track  │   │• Queue mgmt  │
+│• Discovery   │   │• Decode data │   │• Hop count   │   │• Auto retry  │
+│• Connections │   │• Validation  │   │• Rebroadcast │   │• Backoff     │
+│• Endpoints   │   │• Retry logic │   │• Cleanup     │   │• Callbacks   │
+│• Conn limit  │   │• Health ping │   │              │   │              │
+│• Adaptive    │   │              │   │              │   │              │
+└──────────────┘   └──────────────┘   └──────────────┘   └──────────────┘
+        │                   │                   │                   │
+        │                   │                   │                   │
+        ▼                   ▼                   ▼                   ▼
+┌──────────────┐   ┌──────────────┐   ┌──────────────┐   ┌──────────────┐
+│ Connection   │   │  Bluetooth   │   │  Received    │   │ Permission   │
+│   Metrics    │   │  Constants   │   │    Data      │   │   Manager    │
+├──────────────┤   ├──────────────┤   ├──────────────┤   ├──────────────┤
+│• Attempt log │   │• Service ID  │   │• Sender info │   │• BT perms    │
+│• Success rate│   │• Timeouts    │   │• Payload     │   │• Location    │
+│• Adaptive TO │   │• Limits      │   │• Timestamp   │   │• WiFi nearby │
+│• Event log   │   │• Types       │   │              │   │              │
+│• Statistics  │   │• Reconnect   │   │              │   │              │
+└──────────────┘   │• Metrics     │   └──────────────┘   └──────────────┘
                    └──────────────┘
 ```
+
+---
+
+## 🆕 New Components (Enhancement)
+
+### **ReconnectionManager** (NEW)
+Manages automatic reconnection for lost connections.
+
+**Features:**
+- Queue-based reconnection with exponential backoff
+- Tracks retry counts (max 5 attempts)
+- Periodic reconnection attempts (every 5 seconds)
+- Automatic cleanup of exhausted attempts
+- Callbacks for reconnection events
+
+**Key Methods:**
+- `addToQueue()` - Add disconnected endpoint
+- `removeFromQueue()` - Remove on successful reconnection
+- `attemptReconnections()` - Process reconnection queue
+- `shouldAttemptReconnection()` - Check backoff timing
+
+### **ConnectionMetrics** (NEW)
+Tracks connection statistics for adaptive strategy.
+
+**Features:**
+- Records connection attempt outcomes
+- Calculates success rates over sliding window (last 10 attempts)
+- Adaptive timeout adjustment (5s → 10s based on success rate)
+- Detailed event logging for debugging
+- Statistics API for monitoring
+
+**Key Methods:**
+- `recordAttempt()` - Log connection outcome
+- `calculateSuccessRate()` - Compute success percentage
+- `getRecommendedTimeout()` - Get adaptive timeout value
+- `updateTimeout()` - Adjust based on success rate
+- `recordEvent()` - Log detailed connection events
+- `getStatistics()` - Get metrics summary
 
 ---
 
@@ -162,11 +206,17 @@
 │                    Device Startup                       │
 │                                                         │
 │  BluetoothService()                                    │
+│  ├─> _initializeManagers()                            │
+│  │   ├─> ConnectionManager                            │
+│  │   ├─> ReconnectionManager (NEW)                    │
+│  │   ├─> ConnectionMetrics (NEW)                      │
+│  │   ├─> PayloadHandler                               │
+│  │   └─> MeshNetworkManager                           │
 │  └─> _initializeReceiverMode()                        │
 │      ├─> ConnectionManager.startAdvertising()         │
 │      │   └─> Device becomes visible                   │
 │      └─> ConnectionManager.startDiscovery()           │
-│          └─> Device starts scanning                   │
+│          └─> Device starts scanning (adaptive freq)   │
 └─────────────────────────────────────────────────────────┘
                             │
                             ▼
@@ -174,7 +224,9 @@
 │                  Device Discovery                       │
 │                                                         │
 │  ConnectionManager._handleEndpointFound()              │
-│  └─> Found nearby device                              │
+│  ├─> Check connection limit (max 8)                   │
+│  ├─> Log discovery event (ConnectionMetrics)          │
+│  └─> If under limit:                                  │
 │      └─> ConnectionManager.requestConnection()        │
 └─────────────────────────────────────────────────────────┘
                             │
@@ -184,8 +236,9 @@
 │                                                         │
 │  ConnectionManager._handleConnectionInitiated()        │
 │  ├─> Called on BOTH devices                           │
+│  ├─> Accept within 2 seconds                          │
 │  └─> ConnectionManager.acceptConnection()             │
-│      └─> Register temporary payload callback          │
+│      └─> Register payload callback immediately        │
 └─────────────────────────────────────────────────────────┘
                             │
                             ▼
@@ -194,6 +247,8 @@
 │                                                         │
 │  ConnectionManager._handleConnectionResult()           │
 │  ├─> Status.CONNECTED                                 │
+│  ├─> Record success (ConnectionMetrics)               │
+│  ├─> Send verification ping                           │
 │  ├─> Add to _connectedDevices                         │
 │  └─> BluetoothService._registerPayloadCallback()      │
 │      └─> Register final payload callback              │
@@ -204,8 +259,10 @@
 │                  Connection Active                      │
 │                                                         │
 │  • Can send/receive data                              │
-│  • Health checks every 30s                            │
-│  • Automatic cleanup of dead connections              │
+│  • Health checks every 30s (2s timeout)               │
+│  • Automatic cleanup of stale connections             │
+│  • Adaptive discovery frequency                       │
+│  • Connection quality logging                         │
 └─────────────────────────────────────────────────────────┘
                             │
                             ▼
@@ -214,7 +271,20 @@
 │                                                         │
 │  ConnectionManager._handleDisconnected()               │
 │  ├─> Remove from _connectedDevices                    │
+│  ├─> Add to ReconnectionManager queue (NEW)           │
+│  ├─> Record event (ConnectionMetrics)                 │
 │  └─> notifyListeners()                                │
+└─────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────┐
+│              Auto-Reconnection (NEW)                    │
+│                                                         │
+│  ReconnectionManager.attemptReconnections()            │
+│  ├─> Check backoff timing (5s intervals)              │
+│  ├─> Attempt reconnection (max 5 retries)             │
+│  ├─> On success: remove from queue                    │
+│  └─> On exhausted: remove from queue                  │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -350,6 +420,61 @@ Report Flow (with hop count):
 
 ---
 
+## 🔧 Enhanced Features
+
+### **1. Range Optimization**
+- P2P_CLUSTER strategy for maximum range
+- Extended connection timeouts (5-10 seconds)
+- Retry logic for weak signals
+- Platform-specific transmit power configuration
+
+### **2. Auto-Reconnection System**
+- Queue-based reconnection management
+- Exponential backoff (5 second intervals)
+- Maximum 5 retry attempts per endpoint
+- Automatic cleanup of exhausted attempts
+
+### **3. Adaptive Connection Strategy**
+- Success rate tracking (sliding window of 10 attempts)
+- Dynamic timeout adjustment:
+  - < 50% success → increase to 10s
+  - > 80% success → decrease to 5s
+- Discovery restart on low device count
+- Adaptive discovery frequency based on connections
+
+### **4. Enhanced Health Monitoring**
+- Faster stale detection (2 second timeout)
+- Periodic health checks (every 30 seconds)
+- Automatic disconnection of stale connections
+- Stale connections added to reconnection queue
+
+### **5. Connection Quality Management**
+- Connection limit enforcement (max 8 devices)
+- Parallel connection processing
+- Signal strength logging (when available)
+- Connection quality event tracking
+
+### **6. Lifecycle Management**
+- Background/foreground transition handling
+- Connection preservation during app state changes
+- Bluetooth state monitoring
+- Automatic pause/resume on Bluetooth disable/enable
+
+### **7. Error Recovery**
+- Graceful handling of API errors (ALREADY_ADVERTISING, ALREADY_DISCOVERING)
+- Automatic retry with exponential backoff
+- Full reset on consecutive errors (3+ errors)
+- Comprehensive error logging
+
+### **8. Comprehensive Metrics**
+- Connection attempt tracking
+- Success rate calculation
+- Event logging with timestamps
+- Debug mode for detailed metrics
+- Statistics API for monitoring
+
+---
+
 ## 🎯 Key Design Patterns
 
 ### **1. Facade Pattern**
@@ -388,4 +513,177 @@ Managers are injected into `BluetoothService` constructor.
 
 ---
 
-This architecture provides a solid foundation for a scalable, maintainable Bluetooth mesh network implementation.
+## ⚙️ Configuration Options
+
+### **Connection Management**
+```dart
+// In bluetooth_constants.dart
+static const int maxConnections = 8;  // Maximum simultaneous connections
+static const int healthCheckIntervalSeconds = 30;  // Health check frequency
+static const int healthCheckTimeoutSeconds = 2;  // Stale connection timeout
+```
+
+### **Reconnection Settings**
+```dart
+static const int reconnectionMaxRetries = 5;  // Max reconnection attempts
+static const int reconnectionIntervalSeconds = 5;  // Time between retries
+static const int reconnectionTimerIntervalSeconds = 2;  // Queue check frequency
+```
+
+### **Adaptive Strategy**
+```dart
+static const int metricsWindowSize = 10;  // Success rate window
+static const double lowSuccessThreshold = 0.5;  // Increase timeout threshold
+static const double highSuccessThreshold = 0.8;  // Decrease timeout threshold
+static const int adaptiveTimeoutMin = 5000;  // Minimum timeout (ms)
+static const int adaptiveTimeoutMax = 10000;  // Maximum timeout (ms)
+```
+
+### **Discovery Settings**
+```dart
+static const int discoveryHighFrequencySeconds = 5;  // When no connections
+static const int discoveryNormalFrequencySeconds = 30;  // When connected
+static const int discoveryRestartIntervalSeconds = 30;  // Restart threshold
+```
+
+### **Error Recovery**
+```dart
+static const int fullResetErrorThreshold = 3;  // Errors before full reset
+static const int sendRetryCount = 3;  // Send retry attempts
+static const int sendRetryDelayMs = 1000;  // Base retry delay
+```
+
+---
+
+## 📖 Usage Examples
+
+### **Basic Initialization**
+```dart
+// In main.dart
+ChangeNotifierProvider(
+  create: (_) => BluetoothService(),
+)
+
+// The service automatically:
+// - Initializes all managers
+// - Starts advertising and discovery
+// - Begins health checks
+// - Starts reconnection loop
+```
+
+### **Sending a Report**
+```dart
+final bluetooth = Provider.of<BluetoothService>(context, listen: false);
+
+// Send report with automatic connection management
+final success = await bluetooth.sendReportData(
+  title: 'Hazard Report',
+  description: 'Fallen tree blocking path',
+  hazardType: 'Obstacle',
+  location: 'Trail marker 5',
+  imageBytes: imageData,
+);
+
+if (success) {
+  print('Report sent to ${bluetooth.connectedDeviceCount} devices');
+}
+```
+
+### **Monitoring Connection Status**
+```dart
+Consumer<BluetoothService>(
+  builder: (context, bluetooth, child) {
+    return Column(
+      children: [
+        Text('Connected: ${bluetooth.connectedDeviceCount}'),
+        Text('Status: ${bluetooth.statusMessage}'),
+        Text('Advertising: ${bluetooth.isAdvertising}'),
+        Text('Discovering: ${bluetooth.isDiscovering}'),
+      ],
+    );
+  },
+)
+```
+
+### **Getting Connection Statistics**
+```dart
+final bluetooth = Provider.of<BluetoothService>(context, listen: false);
+final stats = bluetooth.getConnectionStatistics();
+
+print('Success Rate: ${stats['successRate']}%');
+print('Current Timeout: ${stats['currentTimeout']}ms');
+print('Total Attempts: ${stats['totalAttempts']}');
+print('Active Connections: ${stats['activeConnections']}');
+print('Reconnection Queue: ${stats['reconnectionQueueSize']}');
+```
+
+### **Manual Health Check**
+```dart
+final bluetooth = Provider.of<BluetoothService>(context, listen: false);
+
+// Manually trigger health check
+await bluetooth.verifyAndCleanConnections();
+
+// Check results
+print('Active: ${bluetooth.connectedDeviceCount}');
+```
+
+### **Handling Lifecycle Events**
+```dart
+// Automatic handling - no code needed!
+// The service automatically:
+// - Preserves connections when app goes to background
+// - Verifies health when app returns to foreground
+// - Pauses operations when Bluetooth is disabled
+// - Resumes operations when Bluetooth is enabled
+```
+
+### **Debug Mode**
+```dart
+// Enable detailed logging in debug builds
+// Logs include:
+// - Signal strength (when available)
+// - Connection quality metrics
+// - Detailed event timeline
+// - Success/failure reasons
+
+// Check logs for patterns like:
+// 🔗 Connection events
+// 📊 Metrics updates
+// 🔄 Reconnection attempts
+// ⚡ Health checks
+// 📡 Discovery events
+```
+
+---
+
+## 🔍 Troubleshooting
+
+### **Connections Not Forming**
+1. Check permissions are granted
+2. Verify Bluetooth is enabled
+3. Check devices are within range (< 100m clear, < 30m with obstacles)
+4. Review connection limit (max 8 devices)
+5. Check logs for error patterns
+
+### **Frequent Disconnections**
+1. Check signal strength in logs
+2. Verify devices aren't moving out of range
+3. Review health check timeout (may need adjustment)
+4. Check for interference (WiFi, other Bluetooth devices)
+
+### **Reconnection Not Working**
+1. Verify ReconnectionManager is initialized
+2. Check reconnection queue size in statistics
+3. Review retry count (max 5 attempts)
+4. Ensure devices are still advertising
+
+### **Poor Performance**
+1. Reduce discovery frequency if battery is concern
+2. Adjust health check interval
+3. Consider connection limit reduction
+4. Review metrics for success rate patterns
+
+---
+
+This architecture provides a solid foundation for a scalable, maintainable Bluetooth mesh network implementation with enhanced reliability, range, and automatic recovery capabilities.
