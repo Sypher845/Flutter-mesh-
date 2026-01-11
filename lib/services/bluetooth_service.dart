@@ -1,442 +1,686 @@
-import 'package:flutter/foundation.dart';
-import 'package:nearby_connections/nearby_connections.dart';
-import 'package:permission_handler/permission_handler.dart';
-import 'dart:convert';
 import 'dart:async';
-import '../models/ticket_model.dart';
+import 'dart:convert';
+import 'dart:io';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart' as fbp;
+import 'package:permission_handler/permission_handler.dart';
+import '../models/report_model.dart';
 
-class BluetoothService extends ChangeNotifier {
-  static const String _serviceId = 'com.yourapp.offlineSync';
-  
-  bool _isAdvertising = false;
-  bool _isDiscovering = false;
-  Set<String> _connectedDevices = {};
-  
-  bool get isAdvertising => _isAdvertising;
-  bool get isDiscovering => _isDiscovering;
-  Set<String> get connectedDevices => _connectedDevices;
-  
-  String _statusMessage = '';
-  String get statusMessage => _statusMessage;
+// Custom enum to avoid conflict with flutter_blue_plus
+enum BleConnectionState { 
+  disconnected, 
+  connecting, 
+  connected, 
+  scanning, 
+  broadcasting 
+}
 
-  Future<bool> _requestPermissions() async {
-    print('🔍 BLUETOOTH DEBUG: Starting permission request...');
-    
-    // Core permissions needed for Bluetooth
-    final corePermissions = [
-      Permission.bluetoothConnect,
-      Permission.bluetoothScan,
-      Permission.bluetoothAdvertise,
-      Permission.location,
-    ];
+class BluetoothService {
+  static final BluetoothService _instance = BluetoothService._internal();
+  factory BluetoothService() => _instance;
+  BluetoothService._internal();
 
-    print('🔍 BLUETOOTH DEBUG: Requesting core permissions: ${corePermissions.map((p) => p.toString()).join(', ')}');
+  BleConnectionState _connectionState = BleConnectionState.disconnected;
+  BleConnectionState get connectionState => _connectionState;
 
-    // Request core permissions
-    Map<Permission, PermissionStatus> statuses = await corePermissions.request();
-    
-    print('🔍 BLUETOOTH DEBUG: Permission results:');
-    statuses.forEach((permission, status) {
-      print('  - ${permission.toString()}: ${status.toString()}');
-    });
-    
-    // Check if core permissions are granted
-    bool coreGranted = statuses.values.every((status) => 
-      status == PermissionStatus.granted || status == PermissionStatus.limited);
-    
-    if (!coreGranted) {
-      print('❌ BLUETOOTH DEBUG: Core Bluetooth permissions not granted: $statuses');
-      return false;
-    }
+  // Scanning
+  StreamSubscription<List<fbp.ScanResult>>? _scanSubscription;
+  final _scanResultsController = StreamController<List<fbp.ScanResult>>.broadcast();
+  Stream<List<fbp.ScanResult>> get scanResults => _scanResultsController.stream;
+  bool _isScanning = false;
 
-    // Try to request additional permissions (these might not be available on all devices)
-    try {
-      final nearbyStatus = await Permission.nearbyWifiDevices.request();
-      print('🔍 BLUETOOTH DEBUG: nearbyWifiDevices permission: $nearbyStatus');
-    } catch (e) {
-      print('⚠️ BLUETOOTH DEBUG: nearbyWifiDevices permission not available: $e');
-    }
+  // Multiple device connections (mesh network)
+  final Map<String, fbp.BluetoothDevice> _connectedDevices = {};
+  final Map<String, StreamSubscription<fbp.BluetoothConnectionState>> _connectionSubscriptions = {};
+  final Map<String, List<StreamSubscription<List<int>>>> _characteristicSubscriptions = {};
+  final Map<String, List<fbp.BluetoothService>> _deviceServices = {};
 
-    print('✅ BLUETOOTH DEBUG: All required permissions granted');
-    return true;
-  }
+  // Broadcasting
+  Timer? _broadcastTimer;
+  bool _isBroadcasting = false;
 
-  Future<void> startAdvertising() async {
-    print('📡 BLUETOOTH DEBUG: startAdvertising() called');
-    
-    if (_isAdvertising) {
-      print('⚠️ BLUETOOTH DEBUG: Advertising already running, skipping');
-      _updateStatus('Advertising is already running');
-      return;
-    }
+  // Use lowercase with underscores for constants
+  static const String serviceUuid = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
+  static const String characteristicUuid = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
 
-    print('🔐 BLUETOOTH DEBUG: Checking permissions for advertising...');
-    if (!await _requestPermissions()) {
-      print('❌ BLUETOOTH DEBUG: Permissions denied for advertising');
-      _updateStatus('❌ Bluetooth permissions denied. Check app settings.');
-      await _showPermissionDetails();
-      return;
+  // MTU and chunking
+  static const int defaultMtu = 512;
+  static const int chunkSize = 400; // Leave room for headers
+  int _currentMtu = defaultMtu;
+
+  // Deduplication
+  final Set<String> _processedReportIds = {};
+  static const int maxProcessedReports = 1000;
+
+  // Retry configuration
+  static const int maxRetryAttempts = 3;
+  static const Duration retryDelay = Duration(seconds: 2);
+  static const Duration connectionTimeout = Duration(seconds: 15);
+
+  // Callbacks
+  Function(ReportModel)? onReportReceived;
+  Function(String)? onError;
+  Function(BleConnectionState)? onStateChanged;
+
+  // Dispose flag
+  bool _isDisposed = false;
+
+  // Initialize Bluetooth and request permissions
+  Future<void> initialize() async {
+    if (_isDisposed) {
+      throw Exception('BluetoothService has been disposed');
     }
 
     try {
-      print('🚀 BLUETOOTH DEBUG: Starting Nearby().startAdvertising()...');
-      print('📡 BLUETOOTH DEBUG: Device name: OfflineSyncDevice');
-      print('📡 BLUETOOTH DEBUG: Strategy: P2P_CLUSTER');
-      print('📡 BLUETOOTH DEBUG: Service ID: $_serviceId');
-      
-      await Nearby().startAdvertising(
-        'OfflineSyncDevice',
-        Strategy.P2P_CLUSTER,
-        onConnectionInitiated: _onConnectionInitiated,
-        onConnectionResult: _onConnectionResult,
-        onDisconnected: _onDisconnected,
-        serviceId: _serviceId,
-      );
-      
-      _isAdvertising = true;
-      print('✅ BLUETOOTH DEBUG: Advertising started successfully');
-      _updateStatus('📡 Started advertising as "OfflineSyncDevice"');
-      notifyListeners();
-    } catch (e) {
-      print('❌ BLUETOOTH DEBUG: Advertising failed with error: $e');
-      if (e.toString().contains('STATUS_ALREADY_ADVERTISING') || 
-          e.toString().contains('8001')) {
-        print('ℹ️ BLUETOOTH DEBUG: Already advertising (system state)');
-        _updateStatus('Advertising is already running');
-        _isAdvertising = true; // Update state to reflect reality
-      } else {
-        print('💥 BLUETOOTH DEBUG: Unexpected advertising error: $e');
-        _updateStatus('Failed to start advertising: $e');
+      // Check Bluetooth support
+      if (await fbp.FlutterBluePlus.isSupported == false) {
+        throw Exception("Bluetooth not supported by this device");
       }
-      notifyListeners();
-    }
-  }
 
-  Future<void> startDiscovery() async {
-    print('🔍 BLUETOOTH DEBUG: startDiscovery() called');
-    
-    if (_isDiscovering) {
-      print('⚠️ BLUETOOTH DEBUG: Discovery already running, skipping');
-      _updateStatus('Discovery is already running');
-      return;
-    }
+      // Request permissions
+      await _requestPermissions();
 
-    print('🔐 BLUETOOTH DEBUG: Checking permissions for discovery...');
-    if (!await _requestPermissions()) {
-      print('❌ BLUETOOTH DEBUG: Permissions denied for discovery');
-      _updateStatus('❌ Bluetooth permissions denied. Check app settings.');
-      await _showPermissionDetails();
-      return;
-    }
-
-    try {
-      print('🚀 BLUETOOTH DEBUG: Starting Nearby().startDiscovery()...');
-      print('🔍 BLUETOOTH DEBUG: Device name: OfflineSyncDevice');
-      print('🔍 BLUETOOTH DEBUG: Strategy: P2P_CLUSTER');
-      print('🔍 BLUETOOTH DEBUG: Service ID: $_serviceId');
-      print('🔍 BLUETOOTH DEBUG: Callbacks registered: onEndpointFound, onEndpointLost');
-      
-      await Nearby().startDiscovery(
-        'OfflineSyncDevice',
-        Strategy.P2P_CLUSTER,
-        onEndpointFound: _onEndpointFound,
-        onEndpointLost: _onEndpointLost,
-        serviceId: _serviceId,
-      );
-      
-      _isDiscovering = true;
-      print('✅ BLUETOOTH DEBUG: Discovery started successfully');
-      print('👀 BLUETOOTH DEBUG: Now scanning for devices with service ID: $_serviceId');
-      _updateStatus('🔍 Scanning for nearby devices...');
-      notifyListeners();
-      
-      // Add a timer to log discovery status and provide helpful messages
-      Timer.periodic(Duration(seconds: 15), (timer) {
-        if (!_isDiscovering) {
-          timer.cancel();
-          return;
+      // Check if Bluetooth is on
+      final adapterState = await fbp.FlutterBluePlus.adapterState.first;
+      if (adapterState != fbp.BluetoothAdapterState.on) {
+        // On Android, we can request to turn on Bluetooth
+        if (Platform.isAndroid) {
+          await fbp.FlutterBluePlus.turnOn();
+          // Wait for Bluetooth to turn on
+          await Future.delayed(const Duration(seconds: 2));
+        } else {
+          throw Exception('Please enable Bluetooth');
         }
-        print('⏰ BLUETOOTH DEBUG: Discovery still running... Found ${_connectedDevices.length} devices so far');
-        
-        if (_connectedDevices.isEmpty) {
-          print('💡 BLUETOOTH DEBUG: No devices found yet. Make sure another device is running this app and advertising!');
-          _updateStatus('🔍 Still searching... Make sure other devices are advertising');
+      }
+
+      // Listen to adapter state changes - FIX THIS
+      fbp.FlutterBluePlus.adapterState.listen((state) {
+        if (state == fbp.BluetoothAdapterState.off && !_isDisposed) {
+          _handleBluetoothOff();
         }
       });
+
+      // Start continuous scanning
+      await startScanning();
+
+      print('✓ Bluetooth initialized successfully');
+    } catch (e) {
+      final errorMsg = 'Bluetooth initialization failed: $e';
+      print('✗ $errorMsg');
+      onError?.call(errorMsg);
+      rethrow;
+    }
+  }
+
+  // Request all necessary permissions
+  Future<void> _requestPermissions() async {
+    if (Platform.isAndroid) {
+      // Android 12+ requires specific Bluetooth permissions
+      final androidInfo = await _getAndroidVersion();
       
-    } catch (e) {
-      print('❌ BLUETOOTH DEBUG: Discovery failed with error: $e');
-      if (e.toString().contains('STATUS_ALREADY_DISCOVERING') || 
-          e.toString().contains('8002')) {
-        print('ℹ️ BLUETOOTH DEBUG: Already discovering (system state)');
-        _updateStatus('Discovery is already running');
-        _isDiscovering = true; // Update state to reflect reality
+      if (androidInfo >= 31) { // Android 12+
+        await [
+          Permission.bluetoothScan,
+          Permission.bluetoothConnect,
+          Permission.bluetoothAdvertise,
+        ].request();
       } else {
-        print('💥 BLUETOOTH DEBUG: Unexpected discovery error: $e');
-        _updateStatus('Failed to start discovery: $e');
+        await [
+          Permission.bluetooth,
+          Permission.location,
+        ].request();
       }
-      notifyListeners();
+    } else if (Platform.isIOS) {
+      await Permission.bluetooth.request();
+    }
+
+    // Verify permissions granted
+    if (Platform.isAndroid) {
+      final bluetoothScan = await Permission.bluetoothScan.status;
+      final bluetoothConnect = await Permission.bluetoothConnect.status;
+      
+      if (!bluetoothScan.isGranted || !bluetoothConnect.isGranted) {
+        throw Exception('Bluetooth permissions not granted');
+      }
     }
   }
 
-  void _onEndpointFound(String endpointId, String endpointName, String serviceId) {
-    print('🎉 BLUETOOTH DEBUG: ENDPOINT FOUND!');
-    print('  - Endpoint ID: $endpointId');
-    print('  - Endpoint Name: $endpointName');
-    print('  - Service ID: $serviceId');
-    print('  - Expected Service ID: $_serviceId');
-    print('  - Service ID Match: ${serviceId == _serviceId}');
-    
-    _updateStatus('📱 Found device: $endpointName');
-    
-    if (serviceId == _serviceId) {
-      print('✅ BLUETOOTH DEBUG: Service ID matches, requesting connection...');
-      _requestConnection(endpointId);
-    } else {
-      print('⚠️ BLUETOOTH DEBUG: Service ID mismatch, ignoring device');
+  Future<int> _getAndroidVersion() async {
+    if (Platform.isAndroid) {
+      // This is a simplified version, use device_info_plus in production
+      return 31; // Assume Android 12+ for safety
     }
+    return 0;
   }
 
-  void _onEndpointLost(String? endpointId) {
-    print('📤 BLUETOOTH DEBUG: ENDPOINT LOST!');
-    print('  - Endpoint ID: $endpointId');
-    _updateStatus('📤 Lost device: $endpointId');
+  // Handle Bluetooth turned off
+  void _handleBluetoothOff() {
+    print('⚠ Bluetooth turned off');
+    _updateState(BleConnectionState.disconnected);
+    _disconnectAllDevices();
+    stopBroadcasting();
   }
 
-  Future<void> _requestConnection(String endpointId) async {
-    print('🤝 BLUETOOTH DEBUG: Requesting connection to endpoint: $endpointId');
+  // Start scanning for nearby devices
+  Future<void> startScanning() async {
+    if (_isDisposed) return;
+    if (_isScanning) return;
+
     try {
-      await Nearby().requestConnection(
-        'OfflineSyncDevice',
-        endpointId,
-        onConnectionInitiated: _onConnectionInitiated,
-        onConnectionResult: _onConnectionResult,
-        onDisconnected: _onDisconnected,
+      _isScanning = true;
+      _updateState(BleConnectionState.scanning);
+
+      // Cancel any existing scan
+      await _scanSubscription?.cancel();
+      await fbp.FlutterBluePlus.stopScan();
+
+      // Start new scan with service filter
+      await fbp.FlutterBluePlus.startScan(
+        withServices: [fbp.Guid(serviceUuid)],
+        timeout: Duration.zero, // Continuous scan
+        androidUsesFineLocation: true,
       );
-      print('✅ BLUETOOTH DEBUG: Connection request sent successfully');
+
+      _scanSubscription = fbp.FlutterBluePlus.scanResults.listen(
+        (results) {
+          if (!_isDisposed && !_scanResultsController.isClosed) {
+            _scanResultsController.add(results);
+            _autoConnectToDevices(results);
+          }
+        },
+        onError: (error) {
+          print('✗ Scan error: $error');
+          onError?.call('Scan error: $error');
+        },
+      );
+
+      print('✓ Scanning started');
     } catch (e) {
-      print('❌ BLUETOOTH DEBUG: Failed to request connection: $e');
-      _updateStatus('❌ Failed to connect to device');
+      _isScanning = false;
+      print('✗ Failed to start scanning: $e');
+      onError?.call('Failed to start scanning: $e');
     }
   }
 
-  void _onConnectionInitiated(String endpointId, ConnectionInfo connectionInfo) {
-    print('🔗 BLUETOOTH DEBUG: CONNECTION INITIATED!');
-    print('  - Endpoint ID: $endpointId');
-    print('  - Connection Info: ${connectionInfo.toString()}');
-    print('  - Auth Token: ${connectionInfo.authenticationToken}');
-    print('  - Endpoint Name: ${connectionInfo.endpointName}');
-    print('  - Is Incoming: ${connectionInfo.isIncomingConnection}');
-    
-    _updateStatus('🔗 Connection initiated with ${connectionInfo.endpointName}');
-    
-    // Auto-accept all connections for simplicity
-    print('✅ BLUETOOTH DEBUG: Auto-accepting connection...');
-    Nearby().acceptConnection(
-      endpointId,
-      onPayLoadRecieved: _onPayloadReceived,
-    );
-  }
+  // Stop scanning
+  Future<void> stopScanning() async {
+    if (!_isScanning) return;
 
-  void _onConnectionResult(String endpointId, Status status) {
-    print('🔗 BLUETOOTH DEBUG: CONNECTION RESULT!');
-    print('  - Endpoint ID: $endpointId');
-    print('  - Status: ${status.toString()}');
-    
-    if (status == Status.CONNECTED) {
-      _connectedDevices.add(endpointId);
-      print('✅ BLUETOOTH DEBUG: Successfully connected to $endpointId');
-      print('📊 BLUETOOTH DEBUG: Total connected devices: ${_connectedDevices.length}');
-      _updateStatus('✅ Connected to device: $endpointId');
-      notifyListeners();
-    } else {
-      print('❌ BLUETOOTH DEBUG: Connection failed to $endpointId with status: $status');
-      _updateStatus('❌ Failed to connect to device: $endpointId');
+    try {
+      await _scanSubscription?.cancel();
+      _scanSubscription = null;
+      await fbp.FlutterBluePlus.stopScan();
+      _isScanning = false;
+      print('✓ Scanning stopped');
+    } catch (e) {
+      print('✗ Error stopping scan: $e');
     }
   }
 
-  void _onDisconnected(String endpointId) {
-    print('💔 BLUETOOTH DEBUG: DISCONNECTED!');
-    print('  - Endpoint ID: $endpointId');
-    
-    _connectedDevices.remove(endpointId);
-    print('📊 BLUETOOTH DEBUG: Remaining connected devices: ${_connectedDevices.length}');
-    _updateStatus('💔 Disconnected from device: $endpointId');
-    notifyListeners();
-  }
+  // Auto-connect to discovered devices
+  void _autoConnectToDevices(List<fbp.ScanResult> results) {
+    for (var result in results) {
+      final deviceId = result.device.remoteId.toString();
+      
+      if (_connectedDevices.containsKey(deviceId)) continue;
 
-  void _onPayloadReceived(String endpointId, Payload payload) {
-    if (payload.type == PayloadType.BYTES) {
-      try {
-        final data = String.fromCharCodes(payload.bytes!);
-        final ticketData = jsonDecode(data);
-        
-        // Handle received ticket data
-        _handleReceivedTicket(ticketData);
-        _updateStatus('Received data from device: $endpointId');
-      } catch (e) {
-        print('Error processing received payload: $e');
-      }
+      _connectToDevice(result.device);
     }
   }
 
-  Future<void> sendTicketData(TicketModel ticket) async {
-    if (_connectedDevices.isEmpty) {
-      _updateStatus('📱 No connected devices to send data');
-      print('BLUETOOTH DEBUG: No connected devices available');
+  // Connect to a device with retry logic
+  Future<void> _connectToDevice(fbp.BluetoothDevice device, {int attempt = 1}) async {
+    if (_isDisposed) return;
+
+    final deviceId = device.remoteId.toString();
+    final deviceName = device.platformName.isNotEmpty ? device.platformName : 'Unknown';
+
+    // Check if already connected
+    if (_connectedDevices.containsKey(deviceId)) {
+      print('ℹ Device $deviceName already connected');
       return;
     }
 
     try {
-      final ticketJson = ticket.toJson();
-      final data = jsonEncode(ticketJson);
-      final bytes = Uint8List.fromList(data.codeUnits);
-      
-      print('BLUETOOTH DEBUG: Sending ticket data to ${_connectedDevices.length} devices');
-      print('BLUETOOTH DEBUG: Data size: ${bytes.length} bytes');
-      
-      for (final deviceId in _connectedDevices) {
-        await Nearby().sendBytesPayload(deviceId, bytes);
-        print('BLUETOOTH DEBUG: Sent to device: $deviceId');
+      print('→ Connecting to $deviceName (attempt $attempt/$maxRetryAttempts)...');
+
+      // Set connecting state
+      _updateState(BleConnectionState.connecting);
+
+      // Connect with timeout
+      await device.connect(
+        timeout: connectionTimeout,
+        autoConnect: false,
+      ).timeout(
+        connectionTimeout,
+        onTimeout: () {
+          throw TimeoutException('Connection timeout');
+        },
+      );
+
+      // Only update state if connection successful
+      _connectedDevices[deviceId] = device;
+      _updateState(BleConnectionState.connected);
+
+      print('✓ Connected to $deviceName');
+
+      // Monitor connection state
+      final connectionSub = device.connectionState.listen(
+        (state) {
+          if (state == fbp.BluetoothConnectionState.disconnected) {
+            print('⚠ Device $deviceName disconnected');
+            _cleanupDevice(deviceId);
+            
+            // Retry connection after delay
+            if (!_isDisposed) {
+              Future.delayed(retryDelay, () {
+                if (!_isDisposed) _connectToDevice(device);
+              });
+            }
+          }
+        },
+        onError: (error) {
+          print('✗ Connection state error for $deviceName: $error');
+        },
+      );
+      _connectionSubscriptions[deviceId] = connectionSub;
+
+      // Request larger MTU for better throughput
+      try {
+        _currentMtu = await device.mtu.first;
+        if (_currentMtu < 512) {
+          _currentMtu = await device.requestMtu(512);
+        }
+        print('✓ MTU set to $_currentMtu for $deviceName');
+      } catch (e) {
+        print('⚠ MTU request failed for $deviceName: $e');
       }
-      
-      _updateStatus('📡 Data sent via Bluetooth hopping to ${_connectedDevices.length} devices');
+
+      // Discover services and subscribe to characteristics
+      await _discoverAndSubscribe(device);
+
+    } on TimeoutException {
+      print('✗ Connection timeout for $deviceName');
+      await _handleConnectionFailure(device, deviceId, attempt);
     } catch (e) {
-      _updateStatus('❌ Failed to send data via Bluetooth: $e');
-      print('BLUETOOTH ERROR: $e');
+      print('✗ Connection error for $deviceName: $e');
+      await _handleConnectionFailure(device, deviceId, attempt);
     }
   }
 
-  void _handleReceivedTicket(Map<String, dynamic> ticketData) {
-    // This would typically forward the data to backend if internet is available
-    // or continue the hopping process
-    print('BLUETOOTH DEBUG: Received ticket data: $ticketData');
-    _updateStatus('📥 Received data from another device!');
-    
-    // In a real implementation, you would:
-    // 1. Check if this device has internet
-    // 2. If yes, send to backend
-    // 3. If no, continue hopping to other devices
+  // Handle connection failure with retry
+  Future<void> _handleConnectionFailure(
+    fbp.BluetoothDevice device,
+    String deviceId,
+    int attempt,
+  ) async {
+    // Cleanup failed connection
+    _cleanupDevice(deviceId);
+
+    // Retry if under max attempts
+    if (attempt < maxRetryAttempts && !_isDisposed) {
+      await Future.delayed(retryDelay);
+      await _connectToDevice(device, attempt: attempt + 1);
+    } else {
+      print('✗ Max retry attempts reached for ${device.platformName}');
+      _updateState(BleConnectionState.disconnected);
+    }
   }
 
-  Future<void> stopDiscovery() async {
-    if (!_isDiscovering) return;
-    
+  // Discover services and subscribe to characteristics
+  Future<void> _discoverAndSubscribe(fbp.BluetoothDevice device) async {
+    final deviceId = device.remoteId.toString();
+    final deviceName = device.platformName.isNotEmpty ? device.platformName : deviceId;
+
     try {
-      await Nearby().stopDiscovery();
-      _isDiscovering = false;
-      _updateStatus('Stopped device discovery');
-      notifyListeners();
-    } catch (e) {
-      print('Error stopping discovery: $e');
-    }
-  }
+      print('→ Discovering services for $deviceName...');
 
-  Future<void> stopAdvertising() async {
-    if (!_isAdvertising) return;
-    
-    try {
-      await Nearby().stopAdvertising();
-      _isAdvertising = false;
-      _updateStatus('Stopped advertising');
-      notifyListeners();
-    } catch (e) {
-      print('Error stopping advertising: $e');
-    }
-  }
+      final services = await device.discoverServices().timeout(
+        const Duration(seconds: 10),
+        onTimeout: () {
+          throw TimeoutException('Service discovery timeout');
+        },
+      );
 
-  Future<void> stopAll() async {
-    try {
-      await Nearby().stopAdvertising();
-      await Nearby().stopDiscovery();
-      await Nearby().stopAllEndpoints();
-      
-      _isAdvertising = false;
-      _isDiscovering = false;
-      _connectedDevices.clear();
-      _updateStatus('Stopped all Bluetooth operations');
-      notifyListeners();
-    } catch (e) {
-      print('Error stopping Bluetooth operations: $e');
-    }
-  }
+      _deviceServices[deviceId] = services;
 
-  Future<void> _showPermissionDetails() async {
-    final permissions = [
-      Permission.bluetoothConnect,
-      Permission.bluetoothScan,
-      Permission.bluetoothAdvertise,
-      Permission.location,
-    ];
+      bool foundService = false;
 
-    print('=== PERMISSION STATUS ===');
-    for (final permission in permissions) {
-      final status = await permission.status;
-      print('${permission.toString()}: ${status.toString()}');
-    }
-    print('========================');
-  }
+      for (var service in services) {
+        if (service.uuid.toString().toLowerCase() == serviceUuid.toLowerCase()) {
+          foundService = true;
+          print('✓ Found target service on $deviceName');
 
-  Future<void> checkBluetoothStatus() async {
-    print('🔵 BLUETOOTH DEBUG: Checking Bluetooth system status...');
-    
-    try {
-      // This is a simple check - in a real app you might want to use a Bluetooth plugin
-      print('📱 BLUETOOTH DEBUG: Device platform: ${defaultTargetPlatform.toString()}');
-      print('🔧 BLUETOOTH DEBUG: Service ID being used: $_serviceId');
-      print('📊 BLUETOOTH DEBUG: Current state - Advertising: $_isAdvertising, Discovering: $_isDiscovering');
-      print('🔗 BLUETOOTH DEBUG: Connected devices: ${_connectedDevices.length}');
-      
-      if (_connectedDevices.isNotEmpty) {
-        print('📋 BLUETOOTH DEBUG: Connected device IDs:');
-        for (final deviceId in _connectedDevices) {
-          print('  - $deviceId');
+          for (var characteristic in service.characteristics) {
+            if (characteristic.uuid.toString().toLowerCase() == characteristicUuid.toLowerCase()) {
+              
+              // Check if characteristic supports notify
+              if (characteristic.properties.notify) {
+                await _subscribeToCharacteristic(device, characteristic);
+              } else {
+                print('⚠ Characteristic does not support notifications on $deviceName');
+              }
+            }
+          }
         }
       }
-      
-      print('');
-      print('🔍 IMPORTANT: Nearby Connections only finds devices running this SAME APP!');
-      print('📱 To test: Install this app on another device and start advertising there');
-      print('🚫 Regular Bluetooth devices (headphones, speakers, etc.) will NOT be found');
-      print('✅ Only devices with this app running and advertising will appear');
-      print('');
-      
+
+      if (!foundService) {
+        print('⚠ Target service not found on $deviceName');
+      }
+
+    } on TimeoutException {
+      print('✗ Service discovery timeout for $deviceName');
+      _cleanupDevice(deviceId);
     } catch (e) {
-      print('❌ BLUETOOTH DEBUG: Error checking Bluetooth status: $e');
+      print('✗ Service discovery error for $deviceName: $e');
+      _cleanupDevice(deviceId);
     }
   }
 
-  // Debug method to simulate device discovery (for testing on emulator)
-  void simulateDeviceFound() {
-    if (!kDebugMode) return;
-    
-    print('🧪 BLUETOOTH DEBUG: SIMULATING DEVICE FOUND (Debug Mode)');
-    final fakeEndpointId = 'FAKE_DEVICE_${DateTime.now().millisecondsSinceEpoch}';
-    final fakeEndpointName = 'TestDevice_${DateTime.now().second}';
-    
-    // Simulate finding a device
-    _onEndpointFound(fakeEndpointId, fakeEndpointName, _serviceId);
-    
-    // Simulate successful connection after 2 seconds
-    Timer(Duration(seconds: 2), () {
-      print('🧪 BLUETOOTH DEBUG: SIMULATING CONNECTION SUCCESS');
-      _onConnectionResult(fakeEndpointId, Status.CONNECTED);
-      
-      _updateStatus('🧪 Simulated device connected for testing');
-    });
+  // Subscribe to a characteristic for notifications
+  Future<void> _subscribeToCharacteristic(
+    fbp.BluetoothDevice device,
+    fbp.BluetoothCharacteristic characteristic,
+  ) async {
+    final deviceId = device.remoteId.toString();
+    final deviceName = device.platformName.isNotEmpty ? device.platformName : deviceId;
+
+    try {
+      // Enable notifications
+      await characteristic.setNotifyValue(true);
+
+      // Subscribe to value updates
+      final sub = characteristic.lastValueStream.listen(
+        (value) {
+          if (!_isDisposed) {
+            _handleReceivedData(deviceId, deviceName, value);
+          }
+        },
+        onError: (error) {
+          print('✗ Characteristic error for $deviceName: $error');
+        },
+        cancelOnError: false,
+      );
+
+      // Store subscription
+      _characteristicSubscriptions.putIfAbsent(deviceId, () => []).add(sub);
+
+      print('✓ Subscribed to characteristic on $deviceName');
+    } catch (e) {
+      print('✗ Failed to subscribe to characteristic on $deviceName: $e');
+    }
   }
 
-  void _updateStatus(String message) {
-    _statusMessage = message;
-    notifyListeners();
-    
-    // Clear status after 5 seconds for error messages, 3 for others
-    final duration = message.contains('❌') ? Duration(seconds: 5) : Duration(seconds: 3);
-    Future.delayed(duration, () {
-      if (_statusMessage == message) {
-        _statusMessage = '';
-        notifyListeners();
+  // Handle received data from a device
+  void _handleReceivedData(String deviceId, String deviceName, List<int> data) {
+    if (data.isEmpty) return;
+
+    try {
+      final jsonString = utf8.decode(data);
+      final reportData = jsonDecode(jsonString);
+      final report = ReportModel.fromJson(reportData);
+
+      // Check for duplicates
+      if (_processedReportIds.contains(report.id)) {
+        print('ℹ Duplicate report ${report.id} from $deviceName - ignored');
+        return;
       }
-    });
+
+      // Check hop count limit
+      if (report.hopCount >= 5) {
+        print('ℹ Report ${report.id} from $deviceName reached max hops - ignored');
+        return;
+      }
+
+      // Mark as processed
+      _processedReportIds.add(report.id);
+      _cleanupOldReports();
+
+      print('✓ Report ${report.id} received from $deviceName (hop: ${report.hopCount})');
+
+      // Notify callback
+      onReportReceived?.call(report);
+
+      // Re-broadcast with incremented hop count
+      _rebroadcastReport(report);
+
+    } catch (e) {
+      print('✗ Error processing data from $deviceName: $e');
+      onError?.call('Error processing data: $e');
+    }
+  }
+
+  // Re-broadcast received report
+  Future<void> _rebroadcastReport(ReportModel report) async {
+    if (_isDisposed || _isBroadcasting) return;
+
+    try {
+      final rebroadcastReport = report.copyWith(
+        hopCount: report.hopCount + 1,
+      );
+
+      await broadcastReport(
+        rebroadcastReport,
+        duration: const Duration(seconds: 10),
+      );
+
+      print('✓ Re-broadcasting report ${report.id} (hop: ${rebroadcastReport.hopCount})');
+    } catch (e) {
+      print('✗ Re-broadcast error: $e');
+    }
+  }
+
+  // Broadcast a report to nearby devices
+  Future<void> broadcastReport(
+    ReportModel report, {
+    Duration duration = const Duration(seconds: 10),
+  }) async {
+    if (_isDisposed) return;
+
+    try {
+      // Stop any existing broadcast
+      await stopBroadcasting();
+
+      _isBroadcasting = true;
+      _updateState(BleConnectionState.broadcasting);
+
+      // Send to all connected devices
+      await _sendReportToConnectedDevices(report);
+
+      // Auto-stop after duration
+      _broadcastTimer = Timer(duration, () {
+        if (!_isDisposed) stopBroadcasting();
+      });
+
+      print('✓ Broadcasting report ${report.id} for ${duration.inSeconds}s');
+    } catch (e) {
+      print('✗ Broadcast error: $e');
+      _isBroadcasting = false;
+      onError?.call('Broadcast error: $e');
+      rethrow;
+    }
+  }
+
+  // Send report to all connected devices
+  Future<void> _sendReportToConnectedDevices(ReportModel report) async {
+    final reportJson = jsonEncode(report.toJson());
+    final reportBytes = utf8.encode(reportJson);
+
+    print('→ Sending report to ${_connectedDevices.length} connected devices (${reportBytes.length} bytes)');
+
+    for (var entry in _connectedDevices.entries) {
+      try {
+        await _sendDataToDevice(entry.value, reportBytes);
+      } catch (e) {
+        print('✗ Failed to send to ${entry.value.platformName}: $e');
+      }
+    }
+  }
+
+  // Send data to a specific device
+  Future<void> _sendDataToDevice(fbp.BluetoothDevice device, List<int> data) async {
+    final deviceId = device.remoteId.toString();
+    final services = _deviceServices[deviceId];
+
+    if (services == null) {
+      throw Exception('No services discovered for device');
+    }
+
+    for (var service in services) {
+      if (service.uuid.toString().toLowerCase() == serviceUuid.toLowerCase()) {
+        for (var characteristic in service.characteristics) {
+          if (characteristic.uuid.toString().toLowerCase() == characteristicUuid.toLowerCase()) {
+            
+            if (characteristic.properties.write || characteristic.properties.writeWithoutResponse) {
+              // Send data in chunks if needed
+              if (data.length > chunkSize) {
+                await _sendDataInChunks(characteristic, data);
+              } else {
+                await characteristic.write(data, withoutResponse: characteristic.properties.writeWithoutResponse);
+              }
+              
+              print('✓ Data sent to ${device.platformName}');
+              return;
+            }
+          }
+        }
+      }
+    }
+
+    throw Exception('No writable characteristic found');
+  }
+
+  // Send data in chunks for large payloads
+  Future<void> _sendDataInChunks(fbp.BluetoothCharacteristic characteristic, List<int> data) async {
+    final chunks = <List<int>>[];
+    for (var i = 0; i < data.length; i += chunkSize) {
+      final end = (i + chunkSize < data.length) ? i + chunkSize : data.length;
+      chunks.add(data.sublist(i, end));
+    }
+
+    print('→ Sending ${chunks.length} chunks...');
+
+    for (var i = 0; i < chunks.length; i++) {
+      await characteristic.write(
+        chunks[i],
+        withoutResponse: characteristic.properties.writeWithoutResponse,
+      );
+      
+      // Small delay between chunks
+      if (i < chunks.length - 1) {
+        await Future.delayed(const Duration(milliseconds: 50));
+      }
+    }
+
+    print('✓ All chunks sent');
+  }
+
+  // Stop broadcasting
+  Future<void> stopBroadcasting() async {
+    _broadcastTimer?.cancel();
+    _broadcastTimer = null;
+    _isBroadcasting = false;
+
+    if (_connectionState == BleConnectionState.broadcasting) {
+      _updateState(BleConnectionState.connected);
+    }
+
+    print('✓ Broadcasting stopped');
+  }
+
+  // Cleanup a specific device
+  void _cleanupDevice(String deviceId) {
+    try {
+      // Cancel connection subscription
+      _connectionSubscriptions[deviceId]?.cancel();
+      _connectionSubscriptions.remove(deviceId);
+
+      // Cancel all characteristic subscriptions
+      _characteristicSubscriptions[deviceId]?.forEach((sub) => sub.cancel());
+      _characteristicSubscriptions.remove(deviceId);
+
+      // Remove services
+      _deviceServices.remove(deviceId);
+
+      // Disconnect device
+      final device = _connectedDevices.remove(deviceId);
+      device?.disconnect().catchError((e) {
+        print('⚠ Error disconnecting device $deviceId: $e');
+      });
+
+      print('✓ Device $deviceId cleaned up');
+    } catch (e) {
+      print('✗ Error cleaning up device $deviceId: $e');
+    }
+  }
+
+  // Disconnect all devices
+  void _disconnectAllDevices() {
+    final deviceIds = _connectedDevices.keys.toList();
+    for (var deviceId in deviceIds) {
+      _cleanupDevice(deviceId);
+    }
+    print('✓ All devices disconnected');
+  }
+
+  // Cleanup old processed reports to prevent memory bloat
+  void _cleanupOldReports() {
+    if (_processedReportIds.length > maxProcessedReports) {
+      final removeCount = _processedReportIds.length - (maxProcessedReports ~/ 2);
+      final toRemove = _processedReportIds.take(removeCount).toList();
+      _processedReportIds.removeAll(toRemove);
+      print('ℹ Cleaned up $removeCount old report IDs');
+    }
+  }
+
+  // Update state and notify listeners
+  void _updateState(BleConnectionState newState) {
+    if (_connectionState != newState) {
+      _connectionState = newState;
+      onStateChanged?.call(newState);
+    }
+  }
+
+  // Check if a report has been processed
+  bool isReportProcessed(String reportId) {
+    return _processedReportIds.contains(reportId);
+  }
+
+  // Get number of connected devices
+  int get connectedDeviceCount => _connectedDevices.length;
+
+  // Check if currently broadcasting
+  bool get isBroadcasting => _isBroadcasting;
+
+  // Dispose and cleanup all resources
+  Future<void> dispose() async {
+    if (_isDisposed) return;
+
+    _isDisposed = true;
+    print('→ Disposing BluetoothService...');
+
+    try {
+      // Stop scanning
+      await stopScanning();
+
+      // Stop broadcasting
+      await stopBroadcasting();
+
+      // Disconnect all devices
+      _disconnectAllDevices();
+
+      // Close stream controller
+      if (!_scanResultsController.isClosed) {
+        await _scanResultsController.close();
+      }
+
+      // Clear caches
+      _processedReportIds.clear();
+      _deviceServices.clear();
+
+      print('✓ BluetoothService disposed successfully');
+    } catch (e) {
+      print('✗ Error during disposal: $e');
+    }
   }
 }

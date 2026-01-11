@@ -1,68 +1,91 @@
 import 'package:flutter/foundation.dart';
-import '../models/ticket_model.dart';
+import '../core/enums/report_enums.dart';
+import '../models/report_model.dart';
 import 'local_storage_service.dart';
 
 class DataSyncService extends ChangeNotifier {
   final LocalStorageService _localStorage = LocalStorageService();
   
-  List<TicketModel> _pendingTickets = [];
-  List<TicketModel> get pendingTickets => _pendingTickets;
+  List<ReportModel> _reports = [];
+  List<ReportModel> get reports => List.unmodifiable(_reports);
   
   String _statusMessage = '';
   String get statusMessage => _statusMessage;
-  
-  // Mock backend setting - change to false to test error scenarios
-  bool _mockBackendSuccess = true;
+
+  bool _isLoading = false;
+  bool get isLoading => _isLoading;
 
   DataSyncService() {
-    _loadPendingTickets();
+    _loadReports();
   }
 
-  Future<void> _loadPendingTickets() async {
-    _pendingTickets = await _localStorage.getPendingTickets();
+  Future<void> _loadReports() async {
+    if (_isLoading) return;
+    
+    _isLoading = true;
     notifyListeners();
-  }
-
-  Future<void> addTicket(TicketModel ticket) async {
-    _pendingTickets.add(ticket);
-    await _localStorage.saveTicket(ticket);
-    notifyListeners();
-  }
-
-  Future<bool> syncToBackend(TicketModel ticket) async {
+    
     try {
-      _updateStatus('Sending data to backend...');
-      
-      // MOCK BACKEND - Simulate network delay and response
-      await Future.delayed(Duration(seconds: 2));
-      
-      // MOCK BACKEND - Simulate success/failure for testing
-      if (_mockBackendSuccess) {
-        // Success - Mark ticket as sent
-        await _markTicketAsSent(ticket);
-        _updateStatus('✅ Data sent to backend successfully!');
-        print('MOCK BACKEND: Received ticket - ID: ${ticket.id}, Description: ${ticket.description}');
-        if (ticket.imagePath != null) {
-          print('MOCK BACKEND: Image path: ${ticket.imagePath}');
-        }
-        return true;
-      } else {
-        // Failure scenario
-        _updateStatus('❌ Failed to send to backend (mock error)');
-        return false;
-      }
-    } catch (e) {
-      _updateStatus('Error sending to backend: $e');
-      return false;
+      _reports = await _localStorage.getPendingReports();
+    } finally {
+      _isLoading = false;
+      notifyListeners();
     }
   }
 
-  Future<void> _markTicketAsSent(TicketModel ticket) async {
-    final updatedTicket = ticket.copyWith(status: TicketStatus.sent);
-    await _localStorage.updateTicket(updatedTicket);
+  Future<void> addReport(ReportModel report) async {
+    final bluetoothReport = report.copyWith(status: ReportStatus.bluetoothHopping);
     
-    _pendingTickets.removeWhere((t) => t.id == ticket.id);
-    notifyListeners();
+    _reports.add(bluetoothReport);
+    notifyListeners(); // Update UI immediately
+    
+    try {
+      await _localStorage.saveReport(bluetoothReport);
+      _updateStatus('📱 Report saved locally - ready for Bluetooth hopping');
+    } catch (e) {
+      // Rollback on error
+      _reports.removeLast();
+      _updateStatus('❌ Failed to save report');
+      notifyListeners();
+      rethrow;
+    }
+  }
+
+  Future<void> markReportAsHopped(ReportModel report) async {
+    final hoppedReport = report.copyWith(status: ReportStatus.sent);
+    final index = _reports.indexWhere((r) => r.id == report.id);
+    
+    if (index == -1) return;
+    
+    final oldReport = _reports[index];
+    _reports[index] = hoppedReport;
+    notifyListeners(); // Update UI immediately
+    
+    try {
+      await _localStorage.updateReport(hoppedReport);
+      _updateStatus('📡 Report successfully hopped via Bluetooth');
+    } catch (e) {
+      // Rollback on error
+      _reports[index] = oldReport;
+      _updateStatus('❌ Failed to update report');
+      notifyListeners();
+    }
+  }
+
+  Future<void> clearAllReports() async {
+    final oldReports = List<ReportModel>.from(_reports);
+    _reports.clear();
+    notifyListeners(); // Update UI immediately
+    
+    try {
+      await _localStorage.clearAllReports();
+      _updateStatus('🗑️ All reports cleared');
+    } catch (e) {
+      // Rollback on error
+      _reports = oldReports;
+      _updateStatus('❌ Failed to clear reports');
+      notifyListeners();
+    }
   }
 
   void _updateStatus(String message) {
@@ -76,13 +99,5 @@ class DataSyncService extends ChangeNotifier {
         notifyListeners();
       }
     });
-  }
-
-  Future<void> retryPendingTickets() async {
-    for (final ticket in List.from(_pendingTickets)) {
-      if (ticket.status == TicketStatus.pending || ticket.status == TicketStatus.failed) {
-        await syncToBackend(ticket);
-      }
-    }
   }
 }

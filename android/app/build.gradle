@@ -1,0 +1,68 @@
+plugins {
+    id "com.android.application"
+    // Updated plugin ID to match modern standards
+    id "org.jetbrains.kotlin.android"
+    id "dev.flutter.flutter-gradle-plugin"
+}
+
+def localProperties = new Properties()
+def localPropertiesFile = rootProject.file('local.properties')
+if (localPropertiesFile.exists()) {
+    localPropertiesFile.withReader('UTF-8') { reader ->
+        localProperties.load(reader)
+    }
+}
+
+def flutterVersionCode = localProperties.getProperty('flutter.versionCode')
+if (flutterVersionCode == null) {
+    flutterVersionCode = '1'
+}
+
+def flutterVersionName = localProperties.getProperty('flutter.versionName')
+if (flutterVersionName == null) {
+    flutterVersionName = '1.0'
+}
+
+android {
+    namespace "com.example.bluetooth_hopping_app"
+    compileSdk 36  // REQUIRED for your plugins
+    ndkVersion flutter.ndkVersion
+
+    // CRITICAL: New Android Gradle Plugin requires Java 17, not 1.8
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+
+    sourceSets {
+        main.java.srcDirs += 'src/main/kotlin'
+    }
+
+    defaultConfig {
+        applicationId "com.example.bluetooth_hopping_app"
+        minSdkVersion flutter.minSdkVersion
+        // Explicitly set to 36 to match compileSdk and avoid library warnings
+        targetSdkVersion 36 
+        versionCode flutterVersionCode.toInteger()
+        versionName flutterVersionName
+        multiDexEnabled true
+    }
+
+    buildTypes {
+        release {
+            signingConfig signingConfigs.debug
+        }
+    }
+}
+
+flutter {
+    source '../..'
+}
+
+// REMOVED: dependencies block with "kotlin-stdlib-jdk7". 
+// The Kotlin plugin now handles the standard library automatically. 
+// Adding it manually with "$kotlin_version" often causes "property not found" errors.
